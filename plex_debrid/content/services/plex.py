@@ -191,7 +191,12 @@ class watchlist(classes.watchlist):
                 entries = graphql_watchlist(user[1])
                 for entry in entries:
                     entry.user = [user]
-                    if not entry in self.data:
+                    # Compare by ratingKey (the GraphQL id) rather than __eq__,
+                    # because the bare GraphQL entry lacks the EID/guid attrs
+                    # that media.__eq__ checks. Without this, every poll cycle
+                    # re-discovers all items as "new" → infinite loop.
+                    existing = next((x for x in self.data if hasattr(x, 'ratingKey') and x.ratingKey == entry.ratingKey), None)
+                    if existing is None:
                         ui_print('[plex] item: "' + entry.title + '" found in ' + user[0] + '`s watchlist')
                         update = True
                         if entry.type == 'show':
@@ -199,15 +204,16 @@ class watchlist(classes.watchlist):
                         if entry.type == 'movie':
                             self.data += [movie(entry)]
                     else:
-                        element = next(x for x in self.data if x == entry)
-                        if not user in element.user:
+                        if not user in existing.user:
                             ui_print('[plex] item: "' + entry.title + '" found in ' + user[0] + '`s watchlist')
-                            element.user += [user]
+                            existing.user += [user]
                             if library.lable.name in classes.refresh.active:
-                                library.lable(element)
+                                library.lable(existing)
                     new_watchlist += [entry]
+            # Remove items no longer in the watchlist (compare by ratingKey).
+            new_keys = {e.ratingKey for e in new_watchlist}
             for entry in self.data[:]:
-                if not entry in new_watchlist:
+                if not hasattr(entry, 'ratingKey') or entry.ratingKey not in new_keys:
                     self.data.remove(entry)
             try:
                 self.data.sort(key=lambda s: s.watchlistedAt, reverse=True)

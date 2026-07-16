@@ -12,157 +12,225 @@
       <h1>plex_debrid</h1>
       <span class="sub">TorBox · automation engine</span>
     </div>
-    <div id="status-pill" class="pill pill--unknown">checking…</div>
+    <div class="header-right">
+      <span id="status-pill" class="pill pill--unknown">checking…</span>
+      <button id="btn-log" class="btn btn--ghost">Log</button>
+    </div>
   </header>
 
-  <main>
-    <!-- Engine control panel -->
+  <main id="main">
     <section class="card">
-      <h2>Engine</h2>
-      <p class="muted" id="engine-state">—</p>
+      <div class="card-head"><h2>Engine</h2><span id="engine-state" class="muted">—</span></div>
       <div class="row">
         <button id="btn-start" class="btn btn--good">Start</button>
         <button id="btn-stop" class="btn btn--bad">Stop</button>
         <button id="btn-restart" class="btn">Restart</button>
       </div>
     </section>
-
-    <!-- Quick TorBox test -->
-    <section class="card">
-      <h2>TorBox connection</h2>
-      <p class="muted">Test the API key before saving. Uses the entered value, or the stored key if blank.</p>
-      <div class="row">
-        <input id="tb-test-key" type="password" placeholder="TorBox API key (leave blank to use saved)" class="input input--grow">
-        <button id="btn-test-tb" class="btn">Test</button>
-      </div>
-      <p id="tb-test-result" class="result"></p>
-    </section>
-
-    <!-- Settings -->
-    <section class="card">
-      <div class="row row--between">
-        <h2>Settings</h2>
-        <div class="row">
-          <button id="btn-reload" class="btn btn--ghost">Reload</button>
-          <button id="btn-save" class="btn btn--good">Save &amp; Restart</button>
-        </div>
-      </div>
-      <div id="settings"></div>
-    </section>
-
-    <!-- Live log -->
-    <section class="card">
-      <div class="row row--between">
-        <h2>Engine log</h2>
-        <button id="btn-refresh-log" class="btn btn--ghost">Refresh</button>
-      </div>
-      <pre id="log" class="log">loading…</pre>
-    </section>
+    <div id="cards"></div>
   </main>
 
-  <footer><span class="muted">plex_debrid v2.95 (vendored) · TorBox provider by ZeroQ</span></footer>
+  <div id="savebar" class="savebar hidden">
+    <span id="dirty-note" class="muted">Unsaved changes</span>
+    <button id="btn-save" class="btn">Save</button>
+    <button id="btn-save-restart" class="btn btn--good">Save &amp; Restart</button>
+  </div>
+
+  <div id="log-drawer" class="drawer hidden">
+    <div class="drawer-head"><h2>Engine log</h2><button id="btn-close-log" class="btn btn--ghost">×</button></div>
+    <pre id="log" class="log">loading…</pre>
+  </div>
 
 <script>
-const api = (path, opts) => fetch(path, opts).then(r => r.json());
-const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const api = (path, opts) => fetch(path, opts).then(r => r.ok ? r.json() : r.json().then(e => Promise.reject(e)));
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let schema = null, values = {}, dirty = false;
+
+function markDirty() { dirty = true; document.getElementById('savebar').classList.remove('hidden'); }
+function clearDirty() { dirty = false; document.getElementById('savebar').classList.add('hidden'); }
 
 function fieldHtml(f) {
-  const val = f.kind === 'list' || f.kind === 'json' ? JSON.stringify(f.value, null, 2) : (f.value ?? '');
-  const dataVal = esc(val);
-  if (f.kind === 'bool') {
-    return `<label class="check"><input type="checkbox" data-key="${f.key}" ${f.value ? 'checked' : ''}> ${f.label}</label>`;
+  const v = values[f.key];
+  const help = f.help ? `<span class="muted small">${esc(f.help)}</span>` : '';
+  if (f.control === 'toggle') {
+    return `<label class="toggle-row">
+      <span class="toggle-label">${esc(f.label)}${help ? `<br>${help}` : ''}</span>
+      <span class="toggle"><input type="checkbox" data-key="${f.key}" data-control="toggle" ${v ? 'checked' : ''}><span class="slider"></span></span>
+    </label>`;
   }
-  const inputType = f.kind === 'password' ? 'password' : 'text';
-  if (f.kind === 'list' || f.kind === 'json') {
-    return `<label>${f.label}<textarea data-key="${f.key}" data-kind="${f.kind}" class="input input--code">${dataVal}</textarea><span class="muted small">${f.help}</span></label>`;
+  if (f.control === 'select') {
+    const opts = (f.options||[]).map(o => `<option value="${esc(o)}" ${v===o?'selected':''}>${esc(o)}</option>`).join('');
+    return `<label>${esc(f.label)}<select data-key="${f.key}" data-control="select"><option value="">— none —</option>${opts}</select>${help}</label>`;
   }
-  return `<label>${f.label}<input type="${inputType}" data-key="${f.key}" class="input" value="${dataVal}"></label>`;
+  if (f.control === 'multiselect') {
+    const chips = (f.options||[]).map(o => {
+      const on = Array.isArray(v) && v.includes(o);
+      return `<button type="button" class="chip ${on?'chip--on':''}" data-key="${f.key}" data-control="multiselect" data-val="${esc(o)}">${esc(o)}</button>`;
+    }).join('');
+    return `<label>${esc(f.label)}<div class="chips">${chips}</div>${help}</label>`;
+  }
+  if (f.control === 'connect') {
+    const connected = Array.isArray(v) && v.length > 0;
+    const names = (v||[]).map(u => esc(u.name||u[0]||'')).join(', ');
+    return `<label>${esc(f.label)}
+      <div class="connect-row">
+        <button type="button" class="btn btn--connect" data-flow="${esc(f.flow)}" data-key="${f.key}">${connected ? 'Reconnect' : 'Connect'}</button>
+        ${connected ? `<span class="ok">✓ ${names}</span>` : ''}
+      </div>
+      <div class="connect-status" data-flow="${esc(f.flow)}"></div>${help}</label>`;
+  }
+  if (f.control === 'password') {
+    const prov = f.key.replace(' API Key','');
+    return `<label>${esc(f.label)}
+      <div class="row">
+        <input type="password" data-key="${f.key}" data-control="password" value="${esc(v)}" placeholder="${esc(f.placeholder||'')}">
+        <button type="button" class="btn btn--ghost btn--test" data-provider="${esc(prov)}" data-key="${f.key}">Test</button>
+      </div>${help}</label>`;
+  }
+  if (f.control === 'list') {
+    return `<label>${esc(f.label)}<textarea data-key="${f.key}" data-control="list" class="input input--code">${esc(typeof v==='string'?v:JSON.stringify(v,null,2))}</textarea>${help}</label>`;
+  }
+  return `<label>${esc(f.label)}<input type="text" data-key="${f.key}" data-control="text" value="${esc(v)}" placeholder="${esc(f.placeholder||'')}">${help}</label>`;
 }
 
-async function loadSettings() {
-  const data = await api('/api/settings');
-  const root = document.getElementById('settings');
-  root.innerHTML = data.groups.map(g => `
-    <div class="group">
-      <h3>${g.name}</h3>
-      ${g.fields.map(fieldHtml).join('')}
-    </div>`).join('');
+function shouldShow(f) {
+  if (!f.show_if) return true;
+  const [k, val] = Object.entries(f.show_if)[0];
+  const cur = values[k];
+  return Array.isArray(cur) ? cur.includes(val) : cur === val;
 }
 
-function collectEdits() {
-  const edits = {};
-  document.querySelectorAll('#settings [data-key]').forEach(el => {
-    const key = el.dataset.key;
-    if (el.type === 'checkbox') { edits[key] = el.checked; }
-    else if (el.dataset.kind === 'list' || el.dataset.kind === 'json') {
-      try { edits[key] = JSON.parse(el.value); }
-      catch { edits[key] = el.value; }
-    } else {
-      edits[key] = el.value;
-    }
+function render() {
+  document.getElementById('cards').innerHTML = schema.groups.map(g => `
+    <section class="card" data-group="${esc(g.name)}">
+      <div class="card-head"><h2>${esc(g.name)}</h2></div>
+      ${g.fields.filter(shouldShow).map(fieldHtml).join('')}
+    </section>`).join('');
+  bindEvents();
+}
+
+function snapshotIntoValues() {
+  document.querySelectorAll('[data-key]').forEach(el => {
+    const k = el.dataset.key, c = el.dataset.control;
+    if (c === 'toggle') values[k] = el.checked;
+    else if (c === 'list') { try { values[k] = JSON.parse(el.value); } catch { values[k] = el.value; } }
+    else if (c && c !== 'multiselect') values[k] = el.value;
   });
-  return edits;
+  const ms = {};
+  document.querySelectorAll('.chip[data-control="multiselect"]').forEach(ch => {
+    (ms[ch.dataset.key] = ms[ch.dataset.key] || []).push(...(ch.classList.contains('chip--on')?[ch.dataset.val]:[]));
+  });
+  Object.entries(ms).forEach(([k, arr]) => values[k] = arr);
 }
 
-async function save() {
+function reRender() { snapshotIntoValues(); render(); }
+function collectEdits() { snapshotIntoValues(); const e={}; for (const g of schema.groups) for (const f of g.fields) if (values[f.key]!==undefined) e[f.key]=values[f.key]; return e; }
+
+function bindEvents() {
+  document.querySelectorAll('input[data-control],textarea[data-control],select[data-control]').forEach(el => {
+    const handler = () => { markDirty(); if (el.dataset.control==='select'||el.dataset.control==='multiselect') reRender(); };
+    el.addEventListener('input', handler); el.addEventListener('change', handler);
+  });
+  document.querySelectorAll('.chip[data-control="multiselect"]').forEach(ch =>
+    ch.addEventListener('click', () => { ch.classList.toggle('chip--on'); markDirty(); reRender(); }));
+  document.querySelectorAll('.btn--test').forEach(b => b.addEventListener('click', () => testDebrid(b.dataset.provider, b.dataset.key)));
+  document.querySelectorAll('.btn--connect').forEach(b => b.addEventListener('click', () => startConnect(b.dataset.flow, b.dataset.key)));
+}
+
+async function testDebrid(provider, key) {
+  const keyVal = document.querySelector(`input[data-key="${key}"]`)?.value || values[key] || '';
+  const out = document.querySelector(`.btn--test[data-key="${key}"]`); if(!out) return;
+  const wrap = out.parentElement; wrap.innerHTML = `<span class="muted result-inline">testing…</span>`;
+  try {
+    const r = await api('/api/test-debrid', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider, api_key: keyVal})});
+    let html;
+    if (r.valid === true) {
+      let extra=''; if(r.email)extra=` — ${esc(r.email)}`; if(r.plan)extra+=` · ${esc(r.plan)}${r.premium?' · premium':''}`;
+      html = `<span class="ok result-inline">✓ valid${extra}</span>`;
+    } else if (r.valid === false) html = `<span class="err result-inline">✗ ${esc(r.error||'invalid')}</span>`;
+    else html = `<span class="muted result-inline">${esc(r.detail||'stored')}</span>`;
+    wrap.innerHTML = `<input type="password" data-key="${key}" data-control="password" value="${esc(keyVal)}"><span class="result-inline">${html}</span>`;
+    wrap.parentElement.querySelector('span.muted.small')?.remove();
+    bindEvents();
+  } catch(e) { wrap.innerHTML = `<span class="err result-inline">✗ ${esc(e.error||e)}</span>`; }
+}
+
+let pollTimers = {};
+async function startConnect(flow, key) {
+  const status = document.querySelector(`.connect-status[data-flow="${flow}"]`);
+  const start = flow === 'plex' ? '/api/plex/pin/start' : '/api/trakt/device/start';
+  try {
+    const r = await api(start, {method:'POST'});
+    if (r.error) { status.innerHTML = `<span class="err">${esc(r.error)}</span>`; return; }
+    const code = flow === 'plex' ? r.code : r.user_code, url = r.url;
+    status.innerHTML = `<div class="connect-prompt">
+      <a href="${esc(url)}" target="_blank" class="btn btn--connect">Open ${flow==='plex'?'Plex':'Trakt'} →</a>
+      <div class="code-box">Enter code: <code>${esc(code)}</code></div>
+      <span class="muted small">Waiting for approval…</span></div>`;
+    window.open(url, '_blank'); markDirty();
+    pollConnect(flow, key, flow==='plex'?r.id:r.device_code, status);
+  } catch(e) { status.innerHTML = `<span class="err">${esc(e.error||e)}</span>`; }
+}
+
+function pollConnect(flow, key, idOrCode, statusEl) {
+  const poll = flow === 'plex' ? `/api/plex/pin/poll?id=${idOrCode}` : `/api/trakt/device/poll?code=${idOrCode}`;
+  if (pollTimers[flow]) clearTimeout(pollTimers[flow]);
+  const tick = async () => {
+    try {
+      const r = await api(poll);
+      if (r.done) {
+        if (r.error) { statusEl.innerHTML = `<span class="err">${esc(r.error)}</span>`; return; }
+        const name = flow === 'plex' ? 'plex' : 'trakt';
+        values[key] = [[name, r.token]];
+        statusEl.innerHTML = `<span class="ok">✓ connected</span>`;
+        reRender();
+        return;
+      }
+      pollTimers[flow] = setTimeout(tick, 3000);
+    } catch(e) { statusEl.innerHTML = `<span class="err">${esc(e.error||e)}</span>`; }
+  };
+  tick();
+}
+
+async function save(restart) {
   const edits = collectEdits();
-  const res = await api('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(edits)});
-  if (res.ok) {
-    flash('Saved. Restarting engine…');
-    await api('/api/engine/restart', {method:'POST'});
-    refreshStatus();
-  } else { flash('Save failed', true); }
+  try {
+    await api('/api/settings', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(edits)});
+    if (restart) { await api('/api/engine/restart',{method:'POST'}); flash('Saved. Restarting…'); refreshStatus(); }
+    else flash('Saved');
+    clearDirty(); await loadSettings();
+  } catch(e) { flash('Save failed: '+(e.error||e), true); }
 }
 
 async function refreshStatus() {
   try {
     const s = await api('/api/status');
-    const pill = document.getElementById('status-pill');
-    const state = document.getElementById('engine-state');
-    if (s.engine.running) {
-      pill.className = 'pill pill--good'; pill.textContent = 'running';
-      state.textContent = `running (pid ${s.engine.pid})`;
-    } else {
-      pill.className = 'pill pill--bad'; pill.textContent = 'stopped';
-      state.textContent = 'stopped';
-    }
+    const pill = document.getElementById('status-pill'), st = document.getElementById('engine-state');
+    if (s.engine.running) { pill.className='pill pill--good'; pill.textContent='running'; st.textContent=`running (pid ${s.engine.pid})`; }
+    else { pill.className='pill pill--bad'; pill.textContent='stopped'; st.textContent='stopped'; }
     const log = document.getElementById('log');
     if (s.log_tail) { log.textContent = s.log_tail; log.scrollTop = log.scrollHeight; }
-    else if (!log.dataset.touched) { log.textContent = '(no log yet)'; }
-  } catch { document.getElementById('status-pill').textContent = 'offline'; }
+  } catch { document.getElementById('status-pill').textContent='offline'; }
+}
+async function refreshLog() { const r = await api('/api/logs'); const l=document.getElementById('log'); l.textContent=r.lines||'(empty)'; l.scrollTop=l.scrollHeight; }
+function flash(msg, err) { const p=document.getElementById('status-pill'); p.className='pill '+(err?'pill--bad':'pill--good'); p.textContent=msg; setTimeout(refreshStatus, 2500); }
+
+async function loadSettings() {
+  const data = await api('/api/settings');
+  schema = await api('/api/schema');
+  const byKey = {}; for (const g of schema.groups) for (const f of g.fields) byKey[f.key] = f;
+  values = {}; for (const g of data.groups) for (const f of g.fields) values[f.key] = f.value;
+  schema.groups.forEach(g => g.fields.forEach(f => { Object.assign(f, byKey[f.key]||{}); }));
+  render();
 }
 
-async function refreshLog() {
-  const r = await api('/api/logs');
-  const log = document.getElementById('log');
-  log.dataset.touched = '1';
-  log.textContent = r.lines || '(empty)';
-  log.scrollTop = log.scrollHeight;
-}
-
-async function testTorbox() {
-  const key = document.getElementById('tb-test-key').value.trim();
-  const out = document.getElementById('tb-test-result');
-  out.textContent = 'testing…';
-  const res = await api('/api/test-torbox', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({api_key: key})});
-  if (res.valid) { out.innerHTML = `<span class="ok">✓ valid</span> — ${res.email || '?'} · plan: ${res.plan || '?'}${res.premium ? ' · premium' : ''}`; }
-  else { out.innerHTML = `<span class="err">✗ ${res.error || 'invalid'}</span>`; }
-}
-
-function flash(msg, isErr) {
-  const pill = document.getElementById('status-pill');
-  pill.className = 'pill ' + (isErr ? 'pill--bad' : 'pill--good');
-  pill.textContent = msg;
-  setTimeout(refreshStatus, 2500);
-}
-
-document.getElementById('btn-save').onclick = save;
-document.getElementById('btn-reload').onclick = loadSettings;
+document.getElementById('btn-save').onclick = () => save(false);
+document.getElementById('btn-save-restart').onclick = () => save(true);
 document.getElementById('btn-start').onclick = async () => { await api('/api/engine/start',{method:'POST'}); refreshStatus(); };
 document.getElementById('btn-stop').onclick = async () => { await api('/api/engine/stop',{method:'POST'}); refreshStatus(); };
 document.getElementById('btn-restart').onclick = async () => { await api('/api/engine/restart',{method:'POST'}); refreshStatus(); };
-document.getElementById('btn-test-tb').onclick = testTorbox;
-document.getElementById('btn-refresh-log').onclick = refreshLog;
+document.getElementById('btn-log').onclick = () => { document.getElementById('log-drawer').classList.toggle('hidden'); refreshLog(); };
+document.getElementById('btn-close-log').onclick = () => document.getElementById('log-drawer').classList.add('hidden');
 
 loadSettings();
 refreshStatus();

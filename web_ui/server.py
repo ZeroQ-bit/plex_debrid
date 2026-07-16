@@ -18,12 +18,14 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from settings_bridge import SettingsStore  # noqa: E402
+import auth  # noqa: E402
 
 PD_ROOT = os.environ.get("PD_ROOT", "/app/plex_debrid")
 CONFIG_DIR = os.environ.get("PD_CONFIG_DIR", "/config")
@@ -130,31 +132,6 @@ def tail(path, lines=200):
         return ""
 
 
-def test_torbox(api_key):
-    """Validate a TorBox API key by calling /user/me. Returns {valid, plan, ...}."""
-    if not api_key:
-        return {"valid": False, "error": "no api key provided"}
-    url = "https://api.torbox.app/v1/api/user/me?api_key=" + str(api_key)
-    req = urllib.request.Request(url, headers={"User-Agent": "plex-debrid-umbrel"})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        if data.get("success"):
-            user = data.get("data", {})
-            plan_map = {0: "Free", 1: "Essential", 2: "Pro", 3: "Standard"}
-            return {
-                "valid": True,
-                "email": user.get("email"),
-                "plan": plan_map.get(user.get("plan"), str(user.get("plan"))),
-                "premium": user.get("premium", False),
-            }
-        return {"valid": False, "error": str(data.get("error", "unknown"))}
-    except urllib.error.HTTPError as e:
-        return {"valid": False, "error": f"HTTP {e.code}"}
-    except Exception as e:
-        return {"valid": False, "error": str(e)}
-
-
 # --------------------------------------------------------------------------
 # HTTP handler
 # --------------------------------------------------------------------------
@@ -201,11 +178,15 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- GET routes -------------------------------------------------------
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        qs = urllib.parse.parse_qs(parsed.query)
         if path in ("/", "/index.html"):
             return self._serve_static("index.html")
         if path == "/api/health":
             return self._send_json({"ok": True, "name": "plex-debrid"})
+        if path == "/api/schema":
+            return self._send_json(store.schema())
         if path == "/api/settings":
             return self._send_json(store.load_grouped())
         if path == "/api/status":
@@ -216,6 +197,20 @@ class Handler(BaseHTTPRequestHandler):
             })
         if path == "/api/logs":
             return self._send_json({"lines": tail(PD_LOG, 500)})
+        if path == "/api/plex/pin/poll":
+            pin_id = (qs.get("id") or [""])[0]
+            if not pin_id:
+                return self._send_json({"error": "missing id"}, 400)
+            return self._send_json(auth.plex_poll_pin(pin_id, CONFIG_DIR))
+        if path == "/api/trakt/device/poll":
+            code = (qs.get("code") or [""])[0]
+            if not code:
+                return self._send_json({"error": "missing code"}, 400)
+            return self._send_json(auth.trakt_poll(code))
+        if path == "/api/overseerr/users":
+            base = (qs.get("base") or [""])[0]
+            key = (qs.get("key") or [""])[0]
+            return self._send_json(auth.overseerr_users(base, key))
         # static asset fallback
         asset = path.lstrip("/")
         if asset and os.path.isfile(os.path.join(STATIC_DIR, asset)):
@@ -234,13 +229,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"error": "invalid json"}, 400)
             store.apply_edits(body)
             return self._send_json({"ok": True, "saved": True})
-        if path == "/api/test-torbox":
+        if path == "/api/plex/pin/start":
+            return self._send_json(auth.plex_start_pin(CONFIG_DIR))
+        if path == "/api/trakt/device/start":
+            return self._send_json(auth.trakt_start())
+        if path == "/api/test-debrid":
             body = self._read_json() or {}
+            provider = body.get("provider", "")
             key = body.get("api_key")
             if not key:
-                # fall back to the stored key
-                key = store.load_raw().get("TorBox API Key", "")
-            return self._send_json(test_torbox(key))
+                # fall back to the stored key for this provider
+                field = "{} API Key".format(provider)
+                key = store.load_raw().get(field, "")
+            return self._send_json(auth.test_debrid(provider, key))
         if path == "/api/engine/start":
             ok, msg = engine.start()
             return self._send_json({"ok": ok, "message": msg, "engine": engine.status()})

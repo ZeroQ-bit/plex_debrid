@@ -204,6 +204,10 @@ function pollConnect(flow, key, idOrCode, statusEl) {
 async function discoverPlexSections(targetKey) {
   const btn = document.querySelector(`.btn--discover[data-target="${targetKey}"]`);
   if (btn) { btn.textContent = '…'; btn.disabled = true; }
+  // Snapshot the current DOM field values (e.g. the server URL the user just
+  // typed) into values[] before reading them, so discovery uses what's on
+  // screen even before Save.
+  snapshotIntoValues();
   try {
     // Send the in-memory Plex users + server URL so discovery works even
     // before the user clicks Save (the token may not be on disk yet).

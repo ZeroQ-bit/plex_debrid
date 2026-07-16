@@ -24,6 +24,28 @@ LIBRARY_IGNORE = ["Plex Discover Watch Status", "Trakt Watch Status", "Local ign
 SCRAPER_SOURCES = ["Torrentio", "Jackett", "Prowlarr", "Nyaa", "Orionoid", "Rarbg", "1337x"]
 AUTO_REMOVE_OPTS = ["movie", "show", "both", "none"]
 
+# plex_debrid's built-in default version preset (from releases/__init__.py).
+# Shown by default when the user has no Versions configured. The crucial rule
+# is ["cache status", "requirement", "cached", ""] — it makes plex_debrid only
+# accept torrents already cached on the debrid service (no waiting for downloads).
+DEFAULT_VERSIONS = [
+    ["1080p SDR",
+     [["retries", "<=", "48"],
+      ["media type", "all", ""]],
+     "true",
+     [["cache status", "requirement", "cached", ""],
+      ["resolution", "requirement", "<=", "1080"],
+      ["resolution", "preference", "highest", ""],
+      ["title", "requirement", "exclude", "([^A-Z0-9]|HD|HQ)(CAM|T(ELE)?(S(YNC)?|C(INE)?)|ADS|HINDI)([^A-Z0-9]|RIP|$)"],
+      ["title", "requirement", "exclude", "(3D)"],
+      ["title", "requirement", "exclude", "(DO?VI?)"],
+      ["title", "requirement", "exclude", "(HDR)"],
+      ["title", "preference", "include", "(EXTENDED|REMASTERED|DIRECTORS|THEATRICAL|UNRATED|UNCUT|CRITERION|ANNIVERSARY|COLLECTORS|LIMITED|SPECIAL|DELUXE|SUPERBIT|RESTORED|REPACK)"],
+      ["size", "preference", "highest", ""],
+      ["seeders", "preference", "highest", ""],
+      ["size", "requirement", ">=", "0.1"]]],
+]
+
 # (json_key, label, control, {options/show_if/help})
 # Grouped top-to-bottom in the order the UI should present them.
 # json_key MUST match plex_debrid's settings.json key exactly.
@@ -155,7 +177,8 @@ SCHEMA = [
     ]),
     ("Versions (Quality Rules)", [
         ("Versions", "Quality Rule Sets", "list",
-            {"help": "plex_debrid's quality filter rule tuples. Edit as JSON; see the plex_debrid wiki for the rule format.",
+            {"default": DEFAULT_VERSIONS,
+             "help": "Quality filter rule sets. The default '1080p SDR' preset only accepts cached 1080p releases (no cam, 3D, HDR, DV) — edit as JSON to customize. See the plex_debrid wiki for the rule format.",
              "code": True}),
         ("Special character renaming", "Special Character Renaming", "list",
             {"help": "[[find, replace], ...] rules. Use {{regex}} for patterns, e.g. [['{{\\s+}}', '.']].",
@@ -217,6 +240,11 @@ class SettingsStore:
         for group_name, fields in SCHEMA:
             items = []
             for fkey, label, control, meta in fields:
+                default = meta.get("default")
+                # Use the field's default when the stored value is missing/empty.
+                raw_val = raw.get(fkey)
+                if (raw_val is None or raw_val == "" or raw_val == []) and default is not None:
+                    raw_val = default
                 items.append({
                     "key": fkey, "label": label, "control": control,
                     "options": meta.get("options"),
@@ -226,7 +254,7 @@ class SettingsStore:
                     "placeholder": meta.get("placeholder"),
                     "help": meta.get("help"),
                     "code": meta.get("code", False),
-                    "value": _coerce_for_ui(raw.get(fkey), control),
+                    "value": _coerce_for_ui(raw_val, control),
                 })
             groups.append({"name": group_name, "fields": items})
         extras = {k: v for k, v in raw.items() if k not in _MANAGED_KEYS}

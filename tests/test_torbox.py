@@ -262,8 +262,9 @@ def test_download_uncached_just_submits():
     print("PASS test_download_uncached_just_submits")
 
 
-def test_auth_params_in_get_url():
-    """GET URLs must include the api_key query param."""
+def test_auth_header_in_get():
+    """GET must send the api key via the Authorization: Bearer header (NOT the
+    ?api_key= query param, which TorBox rejects with 401 even for valid keys)."""
     _set_api_key("my-secret-key")
     rel = _Release(hash=VALID_HASH, magnet=MAGNET)
     el = _make_element([rel])
@@ -271,10 +272,15 @@ def test_auth_params_in_get_url():
     mod.session.get.return_value = FakeResponse(payload)
     mod.check(el, force=True)
     called_url = mod.session.get.call_args[0][0]
-    assert "api_key=my-secret-key" in called_url, \
-        f"api_key missing from GET url: {called_url}"
+    called_headers = mod.session.get.call_args[1].get("headers", {})
+    # The key must be in the Bearer header...
+    assert called_headers.get("Authorization") == "Bearer my-secret-key", \
+        f"expected Bearer header, got: {called_headers}"
+    # ...and must NOT be appended to the URL as a query param.
+    assert "api_key=" not in called_url, \
+        f"api_key should not be in the url (causes 401): {called_url}"
     assert "checkcached" in called_url
-    print("PASS test_auth_params_in_get_url")
+    print("PASS test_auth_header_in_get")
 
 
 def test_download_not_cached_returns_false_or_continues():

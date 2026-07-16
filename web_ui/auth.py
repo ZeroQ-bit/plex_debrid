@@ -206,9 +206,14 @@ def trakt_poll(device_code):
 # Debrid key validation
 # --------------------------------------------------------------------------
 # Each provider's validation endpoint. Returns 200 when the key works.
+# Tuple: (url_template, auth_header_template_or_None)
+#   - url_template uses {} as the key placeholder
+#   - auth_header_template (e.g. "Bearer {}") sent as Authorization; None = no header
 _DEBRID_CHECK = {
-    "TorBox": ("https://api.torbox.app/v1/api/user/me?api_key={}", None),
-    "Real Debrid": ("https://api.real-debrid.com/rest/1.0/torrents?limit=1&auth_token={}", "Bearer {}"),
+    # TorBox requires the key in the Authorization: Bearer header — the
+    # ?api_key= query param returns 401 even for valid keys.
+    "TorBox": ("https://api.torbox.app/v1/api/user/me", "Bearer {}"),
+    "Real Debrid": ("https://api.real-debrid.com/rest/1.0/torrents?limit=1&auth_token={}", None),
     "All Debrid": ("https://api.alldebrid.com/v4/user?agent=plex_debrid&apikey={}", None),
     "Premiumize": ("https://www.premiumize.me/api/account/info?apikey={}", None),
 }

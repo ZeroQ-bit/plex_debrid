@@ -7,8 +7,8 @@
 #                     download(element, stream=True, query='', force=False)
 #
 # TorBox API docs: https://api-docs.torbox.app/  (Swagger: https://api.torbox.app/docs)
-# Auth: API key passed as ?api_key=<key> query param (also accepts
-#       Authorization: Bearer <key>).
+# Auth: API key passed in the Authorization: Bearer header.
+#       (The ?api_key= query param returns 401 even for valid keys.)
 #
 # Endpoints used:
 #   GET  /v1/api/torrents/checkcached  — batch instant-availability by infohash
@@ -63,16 +63,14 @@ def logerror(response):
         ui_print("[torbox] error: (401 unauthorized): TorBox api key does not seem to work. check your torbox settings.")
 
 
-def _auth_params():
-    # TorBox accepts the api key as a query param. Returns a ready-to-append
-    # fragment (without leading '?') so callers can build URLs uniformly.
-    return "api_key=" + requests.utils.quote(str(api_key))
+def _auth_header():
+    """Return the Authorization header value for the configured API key.
 
-
-def _join_params(url, params):
-    """Append a 'param=...' string to a url, using ? or & as appropriate."""
-    sep = "&" if "?" in url else "?"
-    return url + sep + params
+    TorBox requires the key in the Authorization: Bearer header. The
+    ?api_key= query param returns 401 even for valid keys, so we must NOT
+    append it to URLs.
+    """
+    return 'Bearer ' + str(api_key) if api_key else None
 
 
 # Get Function
@@ -80,11 +78,8 @@ def get(url):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_5) AppleWebKit/537.36 '
                       '(KHTML, like Gecko) Chrome/50.0.2661.102 Safari/537.36'}
-    # TorBox reads the key from the query string; we also send the bearer header
-    # for forward-compatibility with endpoints that prefer it.
     if api_key:
-        headers['Authorization'] = 'Bearer ' + api_key
-        url = _join_params(url, _auth_params())
+        headers['Authorization'] = _auth_header()
     response = None
     try:
         response = session.get(url, headers=headers)
@@ -102,8 +97,7 @@ def post(url, data=None):
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_5) AppleWebKit/537.36 '
                       '(KHTML, like Gecko) Chrome/50.0.2661.102 Safari/537.36'}
     if api_key:
-        headers['Authorization'] = 'Bearer ' + api_key
-        url = _join_params(url, _auth_params())
+        headers['Authorization'] = _auth_header()
     response = None
     try:
         response = session.post(url, headers=headers, data=data)

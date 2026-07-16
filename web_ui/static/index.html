@@ -205,7 +205,10 @@ async function discoverPlexSections(targetKey) {
   const btn = document.querySelector(`.btn--discover[data-target="${targetKey}"]`);
   if (btn) { btn.textContent = '…'; btn.disabled = true; }
   try {
-    const r = await api('/api/plex/sections');
+    // Send the in-memory Plex users + server URL so discovery works even
+    // before the user clicks Save (the token may not be on disk yet).
+    const r = await api('/api/plex/sections', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({users: values['Plex users'], server: values['Plex server address']})});
     if (r.error) { if (btn) btn.outerHTML = `<span class="err small">${esc(r.error)}</span>`; return; }
     // Cache the discovered sections + a key->title map on every field that uses them.
     const keys = r.sections.map(s => s.key);

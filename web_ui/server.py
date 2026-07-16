@@ -211,12 +211,6 @@ class Handler(BaseHTTPRequestHandler):
             base = (qs.get("base") or [""])[0]
             key = (qs.get("key") or [""])[0]
             return self._send_json(auth.overseerr_users(base, key))
-        if path == "/api/plex/sections":
-            raw = store.load_raw()
-            server = raw.get("Plex server address", "")
-            users = raw.get("Plex users", [])
-            token = users[0][1] if users else ""
-            return self._send_json(auth.plex_library_sections(server, token))
         # static asset fallback
         asset = path.lstrip("/")
         if asset and os.path.isfile(os.path.join(STATIC_DIR, asset)):
@@ -237,6 +231,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"ok": True, "saved": True})
         if path == "/api/plex/pin/start":
             return self._send_json(auth.plex_start_pin(CONFIG_DIR))
+        if path == "/api/plex/sections":
+            # The token may not be on disk yet (user connected but hasn't saved),
+            # so accept it from the request body too. Body wins over disk.
+            body = self._read_json() or {}
+            raw = store.load_raw()
+            server = body.get("server") or raw.get("Plex server address", "")
+            users = body.get("users") or raw.get("Plex users", [])
+            token = users[0][1] if users else ""
+            return self._send_json(auth.plex_library_sections(server, token))
         if path == "/api/trakt/device/start":
             return self._send_json(auth.trakt_start())
         if path == "/api/test-debrid":

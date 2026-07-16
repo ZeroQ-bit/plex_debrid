@@ -163,6 +163,39 @@ def plex_validate_token(token):
     return status == 200
 
 
+def plex_test_token(token):
+    """Validate a Plex token and report whether it can read the watchlist.
+
+    PIN-issued tokens authenticate (account works) but lack Discover scope, so
+    the watchlist endpoint returns 404. Legacy device tokens (from
+    plex.tv/devices.xml) have full scope. This tells the UI which is which.
+    """
+    if not token:
+        return {"valid": False, "error": "no token provided"}
+    # 1. does the token identify an account?
+    status, body = _http_request(
+        "https://plex.tv/api/v2/user?X-Plex-Token=" + token,
+        headers={"Accept": "application/json"})
+    if status != 200:
+        return {"valid": False, "error": f"token rejected (HTTP {status})"}
+    username = None
+    data = _json_or_none(body)
+    if isinstance(data, dict):
+        username = data.get("username") or data.get("title")
+    # 2. can it read the watchlist? (the real test)
+    wl_status, _ = _http_request(
+        "https://metadata.provider.plex.tv/library/sections/watchlist/all?X-Plex-Token=" + token)
+    if wl_status == 200:
+        return {"valid": True, "username": username, "watchlist": True}
+    if wl_status == 404:
+        return {"valid": True, "username": username, "watchlist": False,
+                "error": "token works for your account but Plex says it has no "
+                         "Discover watchlist scope. Use a legacy device token from "
+                         "plex.tv/devices.xml instead of the PIN flow."}
+    return {"valid": True, "username": username, "watchlist": False,
+            "error": f"watchlist check returned HTTP {wl_status}"}
+
+
 def plex_library_sections(server_url, token):
     """List a Plex server's library sections. Returns [{key, title, type}, ...].
 

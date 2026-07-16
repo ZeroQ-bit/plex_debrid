@@ -231,6 +231,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"ok": True, "saved": True})
         if path == "/api/plex/pin/start":
             return self._send_json(auth.plex_start_pin(CONFIG_DIR))
+        if path == "/api/plex/test-token":
+            body = self._read_json() or {}
+            token = body.get("token", "")
+            if not token:
+                # fall back to the stored token
+                users = store.load_raw().get("Plex users", [])
+                token = users[0][1] if (users and isinstance(users[0], (list, tuple)) and len(users[0]) > 1) else ""
+            return self._send_json(auth.plex_test_token(token))
         if path == "/api/plex/sections":
             # The token may not be on disk yet (user connected but hasn't saved),
             # so accept it from the request body too. Body wins over disk.

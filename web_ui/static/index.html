@@ -77,6 +77,22 @@ function fieldHtml(f) {
       ? `<span class="muted small">Click Discover to load your Plex libraries.</span>` : '';
     return `<label>${esc(f.label)}<div class="chips">${chips}</div>${empty}${discover}${help}</label>`;
   }
+  if (f.control === 'connect_legacy') {
+    // Legacy device-token flow: link to fetch token + paste field + Test button.
+    // PIN-issued tokens lack Discover scope, so we use the legacy device token.
+    const connected = Array.isArray(v) && v.length > 0;
+    const token = connected ? (v[0][1] || v[0]?.token || '') : '';
+    const link = f.token_url ? `<a href="${esc(f.token_url)}" target="_blank" class="btn btn--ghost">Get token →</a>` : '';
+    return `<label>${esc(f.label)}
+      <div class="row">
+        <input type="password" data-key="${f.key}" data-control="connect_legacy" value="${esc(token)}" placeholder="Paste your Plex token">
+        <button type="button" class="btn btn--ghost btn--test-token" data-key="${f.key}">Test</button>
+        ${link}
+      </div>
+      <span class="test-token-result" data-key="${f.key}"></span>
+      ${connected ? `<span class="ok small">✓ token saved</span>` : ''}
+      ${help}</label>`;
+  }
   if (f.control === 'connect') {
     const connected = Array.isArray(v) && v.length > 0;
     const names = (v||[]).map(u => esc(u.name||u[0]||'')).join(', ');
@@ -121,6 +137,11 @@ function snapshotIntoValues() {
   document.querySelectorAll('[data-key]').forEach(el => {
     const k = el.dataset.key, c = el.dataset.control;
     if (c === 'toggle') values[k] = el.checked;
+    else if (c === 'connect_legacy') {
+      // Wrap the pasted token in plex_debrid's [[name, token]] format.
+      // Empty field = no token = empty list (disconnects).
+      values[k] = el.value.trim() ? [['plex', el.value.trim()]] : [];
+    }
     else if (c === 'list') { try { values[k] = JSON.parse(el.value); } catch { values[k] = el.value; } }
     else if (c && c !== 'multiselect') values[k] = el.value;
   });
@@ -142,6 +163,7 @@ function bindEvents() {
   document.querySelectorAll('.chip[data-control="multiselect"]').forEach(ch =>
     ch.addEventListener('click', () => { ch.classList.toggle('chip--on'); markDirty(); reRender(); }));
   document.querySelectorAll('.btn--test').forEach(b => b.addEventListener('click', () => testDebrid(b.dataset.provider, b.dataset.key)));
+  document.querySelectorAll('.btn--test-token').forEach(b => b.addEventListener('click', () => testPlexToken(b.dataset.key)));
   document.querySelectorAll('.btn--connect').forEach(b => b.addEventListener('click', () => startConnect(b.dataset.flow, b.dataset.key)));
   document.querySelectorAll('.btn--discover').forEach(b => b.addEventListener('click', () => discoverPlexSections(b.dataset.target)));
 }
@@ -162,6 +184,24 @@ async function testDebrid(provider, key) {
     wrap.parentElement.querySelector('span.muted.small')?.remove();
     bindEvents();
   } catch(e) { wrap.innerHTML = `<span class="err result-inline">✗ ${esc(e.error||e)}</span>`; }
+}
+
+async function testPlexToken(key) {
+  const inp = document.querySelector(`input[data-key="${key}"]`);
+  const out = document.querySelector(`.test-token-result[data-key="${key}"]`);
+  if (!inp || !out) return;
+  const token = inp.value.trim();
+  out.innerHTML = `<span class="muted small">testing…</span>`;
+  try {
+    const r = await api('/api/plex/test-token', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})});
+    if (r.valid && r.watchlist) {
+      out.innerHTML = `<span class="ok small">✓ valid token — watchlist accessible${r.username?' ('+esc(r.username)+')':''}</span>`;
+    } else if (r.valid && !r.watchlist) {
+      out.innerHTML = `<span class="err small">⚠ token works for your account but has no Discover/watchlist scope. ${esc(r.error||'Use a device token from plex.tv/devices.xml')}</span>`;
+    } else {
+      out.innerHTML = `<span class="err small">✗ ${esc(r.error||'invalid token')}</span>`;
+    }
+  } catch(e) { out.innerHTML = `<span class="err small">✗ ${esc(e.error||e)}</span>`; }
 }
 
 let pollTimers = {};

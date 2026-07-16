@@ -21,7 +21,9 @@ CONTENT_SERVICES = ["Plex Watchlist", "Trakt Watchlist", "Overseerr"]
 LIBRARY_COLLECTION = ["Plex Library", "Trakt Collection", "Local", "Jellyfin"]
 LIBRARY_UPDATE = ["Plex Libraries", "Trakt Collections", "Jellyfin Libraries", "Local"]
 LIBRARY_IGNORE = ["Plex Discover Watch Status", "Trakt Watch Status", "Local ignore list"]
-SCRAPER_SOURCES = ["Torrentio", "Jackett", "Prowlarr", "Nyaa", "Orionoid", "Rarbg", "1337x"]
+# NOTE: names MUST be lowercase — plex_debrid's scraper modules use lowercase
+# name attributes (torrentio, jackett, etc.) and compare case-sensitively.
+SCRAPER_SOURCES = ["torrentio", "jackett", "prowlarr", "nyaa", "orionoid", "rarbg", "1337x"]
 AUTO_REMOVE_OPTS = ["movie", "show", "both", "none"]
 
 # plex_debrid's built-in default version preset (from releases/__init__.py).
@@ -153,27 +155,27 @@ SCHEMA = [
         ("Sources", "Scraper Sources", "multiselect", {"options": SCRAPER_SOURCES,
             "help": "Where plex_debrid searches for torrents. Torrentio is the easiest."}),
         ("Torrentio Scraper Parameters", "Torrentio Manifest URL", "text",
-            {"show_if": {"Sources": "Torrentio"},
+            {"show_if": {"Sources": "torrentio"},
              "help": "Configure at torrentio.strem.fun/configure (skip debrid), copy the manifest URL."}),
-        ("Jackett Base URL", "Jackett URL", "text", {"show_if": {"Sources": "Jackett"},
+        ("Jackett Base URL", "Jackett URL", "text", {"show_if": {"Sources": "jackett"},
             "placeholder": "http://192.168.1.43:9117"}),
-        ("Jackett API Key", "Jackett API Key", "password", {"show_if": {"Sources": "Jackett"}}),
-        ("Jackett resolver timeout", "Jackett Resolver Timeout (s)", "text", {"show_if": {"Sources": "Jackett"}, "placeholder": "1"}),
-        ("Jackett indexer filter", "Jackett Indexer Filter", "text", {"show_if": {"Sources": "Jackett"},
+        ("Jackett API Key", "Jackett API Key", "password", {"show_if": {"Sources": "jackett"}}),
+        ("Jackett resolver timeout", "Jackett Resolver Timeout (s)", "text", {"show_if": {"Sources": "jackett"}, "placeholder": "1"}),
+        ("Jackett indexer filter", "Jackett Indexer Filter", "text", {"show_if": {"Sources": "jackett"},
             "help": "Comma-separated indexer names, or 'all'."}),
-        ("Prowlarr Base URL", "Prowlarr URL", "text", {"show_if": {"Sources": "Prowlarr"},
+        ("Prowlarr Base URL", "Prowlarr URL", "text", {"show_if": {"Sources": "prowlarr"},
             "placeholder": "http://192.168.1.43:9696"}),
-        ("Prowlarr API Key", "Prowlarr API Key", "password", {"show_if": {"Sources": "Prowlarr"}}),
-        ("Nyaa parameters", "Nyaa Parameters", "text", {"show_if": {"Sources": "Nyaa"},
+        ("Prowlarr API Key", "Prowlarr API Key", "password", {"show_if": {"Sources": "prowlarr"}}),
+        ("Nyaa parameters", "Nyaa Parameters", "text", {"show_if": {"Sources": "nyaa"},
             "help": "e.g. &c=1_0&s=seeders&o=desc (c: 1_0 anime, 1_4 raw, 1_2 EN-sub)."}),
-        ("Nyaa sleep time", "Nyaa Sleep (s)", "text", {"show_if": {"Sources": "Nyaa"}, "placeholder": "5"}),
-        ("Nyaa proxy", "Nyaa Proxy Domain", "text", {"show_if": {"Sources": "Nyaa"}, "placeholder": "nyaa.si"}),
-        ("Orionoid API Key", "Orionoid Token", "password", {"show_if": {"Sources": "Orionoid"},
+        ("Nyaa sleep time", "Nyaa Sleep (s)", "text", {"show_if": {"Sources": "nyaa"}, "placeholder": "5"}),
+        ("Nyaa proxy", "Nyaa Proxy Domain", "text", {"show_if": {"Sources": "nyaa"}, "placeholder": "nyaa.si"}),
+        ("Orionoid API Key", "Orionoid Token", "password", {"show_if": {"Sources": "orionoid"},
             "help": "OAuth: visit auth.orionoid.com."}),
         ("Orionoid Scraper Parameters", "Orionoid Parameters", "list",
-            {"show_if": {"Sources": "Orionoid"},
+            {"show_if": {"Sources": "orionoid"},
              "help": "Orionoid scraping parameters as [[param, value], ...]. See panel.orionoid.com → Developers → API Docs."}),
-        ("Rarbg API Key", "Rarbg Token", "password", {"show_if": {"Sources": "Rarbg"},
+        ("Rarbg API Key", "Rarbg Token", "password", {"show_if": {"Sources": "rarbg"},
             "help": "Auto-refreshes. Enter the default token if prompted."}),
     ]),
     ("Versions (Quality Rules)", [
@@ -294,6 +296,10 @@ class SettingsStore:
         for key, value in edits.items():
             if isinstance(value, bool):
                 raw[key] = "true" if value else "false"
+            elif key == "Sources" and isinstance(value, list):
+                # Scraper module names are lowercase (torrentio, jackett, ...).
+                # Normalize so the case-sensitive comparison in scraper.get() matches.
+                raw[key] = [str(v).lower() for v in value]
             else:
                 raw[key] = value
         self.save_raw(raw)

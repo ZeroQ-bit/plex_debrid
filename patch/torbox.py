@@ -144,8 +144,9 @@ def download(element, stream=True, query='', force=False):
                 torrent_files = []
                 entry = _lookup_cached_entry(check_resp, info_hash)
                 if entry is not None:
-                    # entry.files may be None for cached-but-fileless entries.
-                    torrent_files = entry.files if entry and entry.files else []
+                    # entry may not have a 'files' attribute, or it may be None.
+                    raw_files = getattr(entry, 'files', None)
+                    torrent_files = raw_files if raw_files else []
 
                 if len(torrent_files) == 0:
                     ui_print("[torbox] error: release not cached (no files): " + release.title,

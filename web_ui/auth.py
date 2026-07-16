@@ -163,6 +163,56 @@ def plex_validate_token(token):
     return status == 200
 
 
+def plex_library_sections(server_url, token):
+    """List a Plex server's library sections. Returns [{key, title, type}, ...].
+
+    Used to auto-populate the 'Plex library refresh' and 'Plex library check'
+    multiselects so the user never has to look up section numbers manually.
+    """
+    if not token:
+        return {"error": "no plex token (connect Plex first)"}
+    base = (server_url or "").rstrip("/")
+    if not base:
+        return {"error": "no plex server url set"}
+    url = base + "/library/sections/?X-Plex-Token=" + token
+    try:
+        status, body = _http_request(url)
+    except urllib.error.URLError as e:
+        return {"error": "could not reach plex server: " + str(e)}
+    if status == 401:
+        return {"error": "plex token rejected (401) — reconnect Plex"}
+    if status != 200:
+        return {"error": f"plex returned HTTP {status}"}
+    # The response is XML: <MediaContainer><Directory key="1" title="Movies" type="movie"/>...</MediaContainer>
+    sections = _parse_plex_sections(body)
+    if not sections:
+        return {"error": "no library sections found (set up at least one Plex library)"}
+    return {"sections": sections}
+
+
+def _parse_plex_sections(xml_text):
+    """Extract Directory entries from a /library/sections response.
+
+    Uses xml.etree (stdlib). Each Directory has key (id), title, type.
+    """
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    sections = []
+    for d in root.iter("Directory"):
+        key = d.get("key")
+        if not key:
+            continue
+        sections.append({
+            "key": key,
+            "title": d.get("title", "(untitled)"),
+            "type": d.get("type", "unknown"),
+        })
+    return sections
+
+
 # --------------------------------------------------------------------------
 # Trakt device OAuth
 # --------------------------------------------------------------------------

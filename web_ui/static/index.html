@@ -63,11 +63,19 @@ function fieldHtml(f) {
     return `<label>${esc(f.label)}<select data-key="${f.key}" data-control="select"><option value="">— none —</option>${opts}</select>${help}</label>`;
   }
   if (f.control === 'multiselect') {
-    const chips = (f.options||[]).map(o => {
-      const on = Array.isArray(v) && v.includes(o);
-      return `<button type="button" class="chip ${on?'chip--on':''}" data-key="${f.key}" data-control="multiselect" data-val="${esc(o)}">${esc(o)}</button>`;
+    // For dynamic_options (plex sections, overseerr users), options may arrive
+    // async; render what we have. plex_sections maps key->title for display.
+    const optList = f._resolved_options || f.options || [];
+    const labelOf = o => (f._option_labels && f._option_labels[o]) ? f._option_labels[o] : o;
+    const chips = optList.map(o => {
+      const on = Array.isArray(v) && v.map(String).includes(String(o));
+      return `<button type="button" class="chip ${on?'chip--on':''}" data-key="${f.key}" data-control="multiselect" data-val="${esc(o)}">${esc(labelOf(o))}</button>`;
     }).join('');
-    return `<label>${esc(f.label)}<div class="chips">${chips}</div>${help}</label>`;
+    const discover = f.dynamic_options === 'plex_sections'
+      ? `<button type="button" class="btn btn--ghost btn--discover" data-target="${esc(f.key)}">Discover</button>` : '';
+    const empty = optList.length === 0 && f.dynamic_options === 'plex_sections'
+      ? `<span class="muted small">Click Discover to load your Plex libraries.</span>` : '';
+    return `<label>${esc(f.label)}<div class="chips">${chips}</div>${empty}${discover}${help}</label>`;
   }
   if (f.control === 'connect') {
     const connected = Array.isArray(v) && v.length > 0;
@@ -135,6 +143,7 @@ function bindEvents() {
     ch.addEventListener('click', () => { ch.classList.toggle('chip--on'); markDirty(); reRender(); }));
   document.querySelectorAll('.btn--test').forEach(b => b.addEventListener('click', () => testDebrid(b.dataset.provider, b.dataset.key)));
   document.querySelectorAll('.btn--connect').forEach(b => b.addEventListener('click', () => startConnect(b.dataset.flow, b.dataset.key)));
+  document.querySelectorAll('.btn--discover').forEach(b => b.addEventListener('click', () => discoverPlexSections(b.dataset.target)));
 }
 
 async function testDebrid(provider, key) {
@@ -190,6 +199,25 @@ function pollConnect(flow, key, idOrCode, statusEl) {
     } catch(e) { statusEl.innerHTML = `<span class="err">${esc(e.error||e)}</span>`; }
   };
   tick();
+}
+
+async function discoverPlexSections(targetKey) {
+  const btn = document.querySelector(`.btn--discover[data-target="${targetKey}"]`);
+  if (btn) { btn.textContent = '…'; btn.disabled = true; }
+  try {
+    const r = await api('/api/plex/sections');
+    if (r.error) { if (btn) btn.outerHTML = `<span class="err small">${esc(r.error)}</span>`; return; }
+    // Cache the discovered sections + a key->title map on every field that uses them.
+    const keys = r.sections.map(s => s.key);
+    const labels = {}; r.sections.forEach(s => { labels[s.key] = `${s.title} (${s.type})`; });
+    for (const g of schema.groups) for (const f of g.fields) {
+      if (f.dynamic_options === 'plex_sections') {
+        f._resolved_options = keys;
+        f._option_labels = labels;
+      }
+    }
+    render();  // re-render so chips appear for both refresh + check fields
+  } catch(e) { if (btn) btn.outerHTML = `<span class="err small">${esc(e.error||e)}</span>`; }
 }
 
 async function save(restart) {

@@ -211,6 +211,12 @@ class Handler(BaseHTTPRequestHandler):
             base = (qs.get("base") or [""])[0]
             key = (qs.get("key") or [""])[0]
             return self._send_json(auth.overseerr_users(base, key))
+        if path == "/api/plex/sections":
+            raw = store.load_raw()
+            server = raw.get("Plex server address", "")
+            users = raw.get("Plex users", [])
+            token = users[0][1] if users else ""
+            return self._send_json(auth.plex_library_sections(server, token))
         # static asset fallback
         asset = path.lstrip("/")
         if asset and os.path.isfile(os.path.join(STATIC_DIR, asset)):

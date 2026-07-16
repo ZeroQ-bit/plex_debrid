@@ -158,6 +158,32 @@ def test_test_debrid_unknown_provider_is_oauth_passthrough():
     print("PASS test_test_debrid_unknown_provider_is_oauth_passthrough")
 
 
+def test_plex_library_sections_parses_xml():
+    _setup({"/library/sections": (200,
+        '<?xml version="1.0"?><MediaContainer>'
+        '<Directory key="1" title="Movies" type="movie"/>'
+        '<Directory key="2" title="TV Shows" type="show"/>'
+        '<Directory key="4" title="Anime" type="show"/>'
+        '</MediaContainer>')})
+    r = auth.plex_library_sections("http://plex:32400", "tok")
+    assert r["sections"][0] == {"key": "1", "title": "Movies", "type": "movie"}
+    assert r["sections"][2]["key"] == "4"
+    print("PASS test_plex_library_sections_parses_xml")
+
+
+def test_plex_library_sections_missing_inputs():
+    assert "no plex token" in auth.plex_library_sections("http://x", "")["error"]
+    assert "no plex server url" in auth.plex_library_sections("", "tok")["error"]
+    print("PASS test_plex_library_sections_missing_inputs")
+
+
+def test_plex_library_sections_rejects_401():
+    _setup({"/library/sections": (401, "<Error/>")})
+    r = auth.plex_library_sections("http://plex:32400", "bad")
+    assert "401" in r["error"]
+    print("PASS test_plex_library_sections_rejects_401")
+
+
 def test_overseerr_users_lists():
     _setup({"api/v1/user": (200, json.dumps([
         {"id": 1, "displayName": "Alice"},

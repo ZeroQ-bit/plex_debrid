@@ -89,18 +89,36 @@ def client_identifier(config_dir):
 # --------------------------------------------------------------------------
 # Plex app-pin (PIN auth v2)
 # --------------------------------------------------------------------------
+# Plex requires a FULL client-identification header set to issue a token that
+# can access Discover/Watchlist. A token created with only Product+Client-ID
+# authenticates (not 401) but lacks the user scope, so the watchlist endpoint
+# returns "Section 'watchlist' not found!" (404). Send the complete set.
 PLEX_PRODUCT = "plex_debrid (ZeroQ Umbrel)"
 PLEX_PIN_URL = "https://plex.tv/api/v2/pins"
+
+
+def _plex_headers(cid):
+    """Full Plex client-identification headers (matches the official clients)."""
+    return {
+        "X-Plex-Product": PLEX_PRODUCT,
+        "X-Plex-Version": "1.0.0",
+        "X-Plex-Client-Identifier": cid,
+        "X-Plex-Platform": "Linux",
+        "X-Plex-Platform-Version": "1.0",
+        "X-Plex-Device": "Linux",
+        "X-Plex-Device-Name": PLEX_PRODUCT,
+        "X-Plex-Device-Screen-Resolution": "1920x1080",
+        "X-Plex-Language": "en",
+        "X-Plex-Provides": "controller",
+        "Accept": "application/json",
+    }
 
 
 def plex_start_pin(config_dir):
     """Start a Plex PIN auth flow. Returns {id, code, url} or {error}."""
     cid = client_identifier(config_dir)
-    headers = {
-        "X-Plex-Product": PLEX_PRODUCT,
-        "X-Plex-Client-Identifier": cid,
-        "Strong": "true",
-    }
+    headers = _plex_headers(cid)
+    headers["Strong"] = "true"
     status, body = _http_request(PLEX_PIN_URL, method="POST", headers=headers)
     if status not in (200, 201):
         return {"error": f"plex pin start failed (HTTP {status})"}
@@ -121,10 +139,7 @@ def plex_poll_pin(pin_id, config_dir):
     validate the token against the watchlist endpoint so the UI can show validity.
     """
     cid = client_identifier(config_dir)
-    headers = {
-        "X-Plex-Product": PLEX_PRODUCT,
-        "X-Plex-Client-Identifier": cid,
-    }
+    headers = _plex_headers(cid)
     status, body = _http_request("{}/{}".format(PLEX_PIN_URL, pin_id), headers=headers)
     if status != 200:
         return {"done": False, "error": f"plex poll failed (HTTP {status})"}

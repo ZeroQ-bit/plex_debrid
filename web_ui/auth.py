@@ -166,9 +166,10 @@ def plex_validate_token(token):
 def plex_test_token(token):
     """Validate a Plex token and report whether it can read the watchlist.
 
-    PIN-issued tokens authenticate (account works) but lack Discover scope, so
-    the watchlist endpoint returns 404. Legacy device tokens (from
-    plex.tv/devices.xml) have full scope. This tells the UI which is which.
+    Tests against the GraphQL API (community.plex.tv/api) — the same endpoint
+    the Plex web app uses and the one plex_debrid's patched watchlist fetch
+    uses. The old REST endpoint (metadata.provider.plex.tv/library/sections/
+    watchlist) is deprecated and returns 404 for many accounts.
     """
     if not token:
         return {"valid": False, "error": "no token provided"}
@@ -179,21 +180,29 @@ def plex_test_token(token):
     if status != 200:
         return {"valid": False, "error": f"token rejected (HTTP {status})"}
     username = None
+    uuid = None
     data = _json_or_none(body)
     if isinstance(data, dict):
         username = data.get("username") or data.get("title")
-    # 2. can it read the watchlist? (the real test)
-    wl_status, _ = _http_request(
-        "https://metadata.provider.plex.tv/library/sections/watchlist/all?X-Plex-Token=" + token)
-    if wl_status == 200:
-        return {"valid": True, "username": username, "watchlist": True}
-    if wl_status == 404:
+        uuid = data.get("uuid")
+    if not uuid:
         return {"valid": True, "username": username, "watchlist": False,
-                "error": "token works for your account but Plex says it has no "
-                         "Discover watchlist scope. Use a legacy device token from "
-                         "plex.tv/devices.xml instead of the PIN flow."}
+                "error": "could not determine account UUID"}
+    # 2. can it read the watchlist via GraphQL?
+    query = '{{ user(id: "{}") {{ watchlist(first: 2) {{ nodes {{ title }} }} }} }}'.format(uuid)
+    wl_status, wl_body = _http_request(
+        "https://community.plex.tv/api", method="POST",
+        headers={"X-Plex-Token": token}, data={"query": query})
+    if wl_status == 200:
+        wl_data = _json_or_none(wl_body) or {}
+        if wl_data.get("data"):
+            count = len(wl_data["data"].get("user", {}).get("watchlist", {}).get("nodes", []))
+            return {"valid": True, "username": username, "watchlist": True, "count": count}
+        if wl_data.get("errors"):
+            return {"valid": True, "username": username, "watchlist": False,
+                    "error": wl_data["errors"][0].get("message", "GraphQL error")}
     return {"valid": True, "username": username, "watchlist": False,
-            "error": f"watchlist check returned HTTP {wl_status}"}
+            "error": f"GraphQL watchlist check returned HTTP {wl_status}"}
 
 
 def plex_library_sections(server_url, token):

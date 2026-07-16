@@ -48,6 +48,70 @@ def post(url, data):
         ui_print("plex error: (json exception): " + str(e), debug=ui_settings.debug)
         return None
 
+def get_user_uuid(token):
+    """Fetch the Plex account UUID for a token (needed for the GraphQL watchlist)."""
+    try:
+        response = session.get(
+            'https://plex.tv/api/v2/user?X-Plex-Token=' + token, headers=headers)
+        data = json.loads(response.content)
+        return data.get('uuid', '')
+    except Exception:
+        return ''
+
+def graphql_watchlist(token):
+    """Fetch the watchlist via Plex's GraphQL API (community.plex.tv/api).
+
+    The legacy REST endpoint (metadata.provider.plex.tv/library/sections/
+    watchlist) is deprecated and returns 404 for many accounts. The GraphQL
+    endpoint is what the Plex web app uses and works reliably.
+
+    Returns a list of SimpleNamespace objects with: ratingKey, title, type,
+    user — matching the shape the watchlist class expects.
+    """
+    uuid = get_user_uuid(token)
+    if not uuid:
+        ui_print("[plex] error: could not determine account UUID for GraphQL watchlist", debug=ui_settings.debug)
+        return []
+    items = []
+    has_next = True
+    end_cursor = None
+    while has_next:
+        after_arg = ', after: "{}"'.format(end_cursor) if end_cursor else ''
+        query = '{{ user(id: "{}") {{ watchlist(first: 100{}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ id title type }} }} }} }}'.format(uuid, after_arg)
+        try:
+            response = session.post(
+                'https://community.plex.tv/api',
+                data=json.dumps({"query": query}),
+                headers={'Content-Type': 'application/json', 'Accept': 'application/json',
+                         'X-Plex-Token': token})
+            if response.status_code != 200:
+                ui_print("[plex] error: GraphQL watchlist returned HTTP {}".format(response.status_code), debug=ui_settings.debug)
+                break
+            data = json.loads(response.content)
+            if data.get('errors'):
+                ui_print("[plex] error: GraphQL watchlist: {}".format(data['errors'][0].get('message', 'unknown')), debug=ui_settings.debug)
+                break
+            wl = data.get('data', {}).get('user', {}).get('watchlist', {})
+            nodes = wl.get('nodes', [])
+            page_info = wl.get('pageInfo', {})
+            for node in nodes:
+                # Map GraphQL fields to the shape plex_debrid expects.
+                # The GraphQL 'id' (a Plex GUID) works as a ratingKey for the
+                # metadata lookup endpoint, which is NOT deprecated.
+                entry = SimpleNamespace(
+                    ratingKey=node.get('id', ''),
+                    title=node.get('title', ''),
+                    type=node.get('type', '').lower(),  # MOVIE -> movie, SHOW -> show
+                    user=[[token if False else 'plex', token]],  # [[name, token]]
+                )
+                items.append(entry)
+            has_next = page_info.get('hasNextPage', False)
+            end_cursor = page_info.get('endCursor')
+        except Exception as e:
+            ui_print("[plex] error: GraphQL watchlist exception: " + str(e), debug=ui_settings.debug)
+            break
+    return items
+
 def setEID(self):
     EID = []
     if hasattr(self,"Guid"):
@@ -64,27 +128,18 @@ class watchlist(classes.watchlist):
         self.data = []
         try:
             for user in users:
-                added = 0
-                total = 1
-                while added < total:
-                    total = 0
-                    url = 'https://metadata.provider.plex.tv/library/sections/watchlist/all?X-Plex-Container-Size=200&X-Plex-Container-Start=' + str(added) + '&X-Plex-Token=' + user[1]
-                    response = get(url)
-                    if hasattr(response, 'MediaContainer'):
-                        total = response.MediaContainer.totalSize
-                        added += response.MediaContainer.size
-                        if hasattr(response.MediaContainer, 'Metadata'):
-                            for entry in response.MediaContainer.Metadata:
-                                entry.user = [user]
-                                if not entry in self.data:
-                                    if entry.type == 'show':
-                                        self.data += [show(entry)]
-                                    if entry.type == 'movie':
-                                        self.data += [movie(entry)]
-                                else:
-                                    element = next(x for x in self.data if x == entry)
-                                    if not user in element.user:
-                                        element.user += [user]
+                entries = graphql_watchlist(user[1])
+                for entry in entries:
+                    entry.user = [user]
+                    if not entry in self.data:
+                        if entry.type == 'show':
+                            self.data += [show(entry)]
+                        if entry.type == 'movie':
+                            self.data += [movie(entry)]
+                    else:
+                        element = next(x for x in self.data if x == entry)
+                        if not user in element.user:
+                            element.user += [user]
             try:
                 self.data.sort(key=lambda s: s.watchlistedAt, reverse=True)
             except:
@@ -133,27 +188,24 @@ class watchlist(classes.watchlist):
         new_watchlist = []
         try:
             for user in users:
-                url = 'https://metadata.provider.plex.tv/library/sections/watchlist/all?X-Plex-Token=' + user[1]
-                response = get(url)
-                if hasattr(response, 'MediaContainer'):
-                    if hasattr(response.MediaContainer, 'Metadata'):
-                        for entry in response.MediaContainer.Metadata:
-                            entry.user = [user]
-                            if not entry in self.data:
-                                ui_print('[plex] item: "' + entry.title + '" found in ' + user[0] + '`s watchlist')
-                                update = True
-                                if entry.type == 'show':
-                                    self.data += [show(entry)]
-                                if entry.type == 'movie':
-                                    self.data += [movie(entry)]
-                            else:
-                                element = next(x for x in self.data if x == entry)
-                                if not user in element.user:
-                                    ui_print('[plex] item: "' + entry.title + '" found in ' + user[0] + '`s watchlist')
-                                    element.user += [user]
-                                    if library.lable.name in classes.refresh.active:
-                                        library.lable(element)
-                        new_watchlist += response.MediaContainer.Metadata
+                entries = graphql_watchlist(user[1])
+                for entry in entries:
+                    entry.user = [user]
+                    if not entry in self.data:
+                        ui_print('[plex] item: "' + entry.title + '" found in ' + user[0] + '`s watchlist')
+                        update = True
+                        if entry.type == 'show':
+                            self.data += [show(entry)]
+                        if entry.type == 'movie':
+                            self.data += [movie(entry)]
+                    else:
+                        element = next(x for x in self.data if x == entry)
+                        if not user in element.user:
+                            ui_print('[plex] item: "' + entry.title + '" found in ' + user[0] + '`s watchlist')
+                            element.user += [user]
+                            if library.lable.name in classes.refresh.active:
+                                library.lable(element)
+                    new_watchlist += [entry]
             for entry in self.data[:]:
                 if not entry in new_watchlist:
                     self.data.remove(entry)

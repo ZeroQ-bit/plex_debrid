@@ -74,7 +74,7 @@ SCHEMA = [
         ("Plex users", "Plex Account Token", "connect_legacy", {"flow": "plex",
             "show_if": {"Content Services": "Plex Watchlist"},
             "token_url": "https://www.plex.tv/devices/",
-            "help": "Get your Plex token: open the link, sign in, find a 'token' in the device list (the long alphanumeric string), paste it below, and click Test. PIN-based login issues tokens without Discover/watchlist scope, so the legacy device token is required."}),
+            "help": "Get your Plex token: open the link, sign in, find a 'token' in the device list, paste it below, and click Test. The watchlist is read via Plex's GraphQL API (the same one the Plex web app uses)."}),
         ("Plex server address", "Plex Server URL", "text", {"placeholder": "http://192.168.1.43:32400",
             "show_if": {"Content Services": "Plex Watchlist"},
             "help": "Used to trigger library scans after a download."}),

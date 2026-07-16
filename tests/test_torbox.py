@@ -224,13 +224,17 @@ def test_download_cached_resolves_links():
         },
     }
     create_payload = {"success": True, "data": {"torrent_id": 77, "hash": VALID_HASH.upper()}}
-    mylist_payload = {"success": True, "data": [{"id": 77, "download_state": "cached"}]}
+    # mylist is called twice: _wait_until_ready (status check) then _get_torrent_files (file list).
+    mylist_ready_payload = {"success": True, "data": [{"id": 77, "download_state": "cached"}]}
+    mylist_files_payload = {"success": True, "data": [{"id": 77, "download_state": "cached",
+        "files": [{"id": 1, "name": "Test.Release.S01E01.mkv", "size": 1000}]}]}
     dl_payload = {"success": True, "data": "https://dl.torbox.app/abc123/Test.Release.S01E01.mkv"}
 
-    # session.get is called for checkcached, mylist, requestdl; session.post for createtorrent.
+    # GET sequence: checkcached → mylist(ready) → mylist(files) → requestdl
     mod.session.get.side_effect = [
         FakeResponse(cached_payload),
-        FakeResponse(mylist_payload),
+        FakeResponse(mylist_ready_payload),
+        FakeResponse(mylist_files_payload),
         FakeResponse(dl_payload),
     ]
     mod.session.post.return_value = FakeResponse(create_payload)
@@ -284,14 +288,14 @@ def test_auth_header_in_get():
 
 
 def test_download_not_cached_returns_false_or_continues():
-    """If checkcached reports no files for the hash, the cached path should not crash."""
+    """If checkcached reports the hash is NOT cached, download should return False."""
     _set_api_key()
     rel = _Release(hash=VALID_HASH, magnet=MAGNET)
     el = _make_element([rel])
-    cached_payload = {"success": True, "data": {VALID_HASH.upper(): {"files": None}}}
+    # Hash not in the data object → entry is None → not cached.
+    cached_payload = {"success": True, "data": {}}
     mod.session.get.return_value = FakeResponse(cached_payload)
     mod.session.post.reset_mock()
-    # No createtorrent should be needed because we bail before creating.
     result = mod.download(el, stream=True, query=".*", force=True)
     assert result is False, f"expected False when not cached, got {result}"
     print("PASS test_download_not_cached_returns_false_or_continues")

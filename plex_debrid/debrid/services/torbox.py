@@ -137,19 +137,16 @@ def download(element, stream=True, query='', force=False):
                 magnet = str(release.download[0])
                 info_hash = release.hash.lower()
 
-                # 1) Confirm cached + fetch its files in one call.
+                # 1) Confirm the hash is cached. The checkcached endpoint confirms
+                #    cache status; files may or may not be listed (even with
+                #    listFiles=true). If cached, proceed — we get the actual file
+                #    list from the torrent details after creating it.
                 check_url = (API_BASE + "/torrents/checkcached?format=object&listFiles=true"
                              + "&hash=" + info_hash)
                 check_resp = get(check_url)
-                torrent_files = []
                 entry = _lookup_cached_entry(check_resp, info_hash)
-                if entry is not None:
-                    # entry may not have a 'files' attribute, or it may be None.
-                    raw_files = getattr(entry, 'files', None)
-                    torrent_files = raw_files if raw_files else []
-
-                if len(torrent_files) == 0:
-                    ui_print("[torbox] error: release not cached (no files): " + release.title,
+                if entry is None:
+                    ui_print("[torbox] error: release not cached: " + release.title,
                              ui_settings.debug)
                     # Defer to uncached handling below only if stream is False.
                     continue
@@ -173,7 +170,15 @@ def download(element, stream=True, query='', force=False):
                              ui_settings.debug)
                     continue
 
-                # 4) Request a direct-downloadable URL for each wanted file.
+                # 4) Get the file list from the torrent details (mylist), since
+                #    checkcached may not return files.
+                torrent_files = _get_torrent_files(torrent_id)
+                if len(torrent_files) == 0:
+                    ui_print('[torbox] error: no files found for cached torrent: ' + release.title,
+                             ui_settings.debug)
+                    continue
+
+                # 5) Request a direct-downloadable URL for each wanted file.
                 wanted_ids = _select_file_ids(torrent_files, wanted, force)
                 direct_links = []
                 for file_id in wanted_ids:
@@ -229,6 +234,30 @@ def _wait_until_ready(torrent_id, timeout=60, interval=2):
             pass
         time.sleep(interval)
     return False
+
+
+def _get_torrent_files(torrent_id, timeout=30, interval=2):
+    """Fetch the file list for a torrent from TorBox's mylist endpoint.
+
+    The checkcached endpoint confirms cache status but may not return files.
+    This fetches the full torrent details (which include the file list) and
+    returns SimpleNamespace objects with .id and .name attributes.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        resp = get(API_BASE + "/torrents/mylist")
+        try:
+            for t in resp.data:
+                if str(getattr(t, 'id', '')) == str(torrent_id):
+                    files = getattr(t, 'files', None)
+                    if files:
+                        return files
+                    # No files yet — torrent may still be processing.
+                    break
+        except Exception:
+            pass
+        time.sleep(interval)
+    return []
 
 
 def _select_file_ids(torrent_files, wanted, force):

@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>plex_debrid</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>plex_debrid</h1>
+      <span class="sub">TorBox · automation engine</span>
+    </div>
+    <div id="status-pill" class="pill pill--unknown">checking…</div>
+  </header>
+
+  <main>
+    <!-- Engine control panel -->
+    <section class="card">
+      <h2>Engine</h2>
+      <p class="muted" id="engine-state">—</p>
+      <div class="row">
+        <button id="btn-start" class="btn btn--good">Start</button>
+        <button id="btn-stop" class="btn btn--bad">Stop</button>
+        <button id="btn-restart" class="btn">Restart</button>
+      </div>
+    </section>
+
+    <!-- Quick TorBox test -->
+    <section class="card">
+      <h2>TorBox connection</h2>
+      <p class="muted">Test the API key before saving. Uses the entered value, or the stored key if blank.</p>
+      <div class="row">
+        <input id="tb-test-key" type="password" placeholder="TorBox API key (leave blank to use saved)" class="input input--grow">
+        <button id="btn-test-tb" class="btn">Test</button>
+      </div>
+      <p id="tb-test-result" class="result"></p>
+    </section>
+
+    <!-- Settings -->
+    <section class="card">
+      <div class="row row--between">
+        <h2>Settings</h2>
+        <div class="row">
+          <button id="btn-reload" class="btn btn--ghost">Reload</button>
+          <button id="btn-save" class="btn btn--good">Save &amp; Restart</button>
+        </div>
+      </div>
+      <div id="settings"></div>
+    </section>
+
+    <!-- Live log -->
+    <section class="card">
+      <div class="row row--between">
+        <h2>Engine log</h2>
+        <button id="btn-refresh-log" class="btn btn--ghost">Refresh</button>
+      </div>
+      <pre id="log" class="log">loading…</pre>
+    </section>
+  </main>
+
+  <footer><span class="muted">plex_debrid v2.95 (vendored) · TorBox provider by ZeroQ</span></footer>
+
+<script>
+const api = (path, opts) => fetch(path, opts).then(r => r.json());
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+function fieldHtml(f) {
+  const val = f.kind === 'list' || f.kind === 'json' ? JSON.stringify(f.value, null, 2) : (f.value ?? '');
+  const dataVal = esc(val);
+  if (f.kind === 'bool') {
+    return `<label class="check"><input type="checkbox" data-key="${f.key}" ${f.value ? 'checked' : ''}> ${f.label}</label>`;
+  }
+  const inputType = f.kind === 'password' ? 'password' : 'text';
+  if (f.kind === 'list' || f.kind === 'json') {
+    return `<label>${f.label}<textarea data-key="${f.key}" data-kind="${f.kind}" class="input input--code">${dataVal}</textarea><span class="muted small">${f.help}</span></label>`;
+  }
+  return `<label>${f.label}<input type="${inputType}" data-key="${f.key}" class="input" value="${dataVal}"></label>`;
+}
+
+async function loadSettings() {
+  const data = await api('/api/settings');
+  const root = document.getElementById('settings');
+  root.innerHTML = data.groups.map(g => `
+    <div class="group">
+      <h3>${g.name}</h3>
+      ${g.fields.map(fieldHtml).join('')}
+    </div>`).join('');
+}
+
+function collectEdits() {
+  const edits = {};
+  document.querySelectorAll('#settings [data-key]').forEach(el => {
+    const key = el.dataset.key;
+    if (el.type === 'checkbox') { edits[key] = el.checked; }
+    else if (el.dataset.kind === 'list' || el.dataset.kind === 'json') {
+      try { edits[key] = JSON.parse(el.value); }
+      catch { edits[key] = el.value; }
+    } else {
+      edits[key] = el.value;
+    }
+  });
+  return edits;
+}
+
+async function save() {
+  const edits = collectEdits();
+  const res = await api('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(edits)});
+  if (res.ok) {
+    flash('Saved. Restarting engine…');
+    await api('/api/engine/restart', {method:'POST'});
+    refreshStatus();
+  } else { flash('Save failed', true); }
+}
+
+async function refreshStatus() {
+  try {
+    const s = await api('/api/status');
+    const pill = document.getElementById('status-pill');
+    const state = document.getElementById('engine-state');
+    if (s.engine.running) {
+      pill.className = 'pill pill--good'; pill.textContent = 'running';
+      state.textContent = `running (pid ${s.engine.pid})`;
+    } else {
+      pill.className = 'pill pill--bad'; pill.textContent = 'stopped';
+      state.textContent = 'stopped';
+    }
+    const log = document.getElementById('log');
+    if (s.log_tail) { log.textContent = s.log_tail; log.scrollTop = log.scrollHeight; }
+    else if (!log.dataset.touched) { log.textContent = '(no log yet)'; }
+  } catch { document.getElementById('status-pill').textContent = 'offline'; }
+}
+
+async function refreshLog() {
+  const r = await api('/api/logs');
+  const log = document.getElementById('log');
+  log.dataset.touched = '1';
+  log.textContent = r.lines || '(empty)';
+  log.scrollTop = log.scrollHeight;
+}
+
+async function testTorbox() {
+  const key = document.getElementById('tb-test-key').value.trim();
+  const out = document.getElementById('tb-test-result');
+  out.textContent = 'testing…';
+  const res = await api('/api/test-torbox', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({api_key: key})});
+  if (res.valid) { out.innerHTML = `<span class="ok">✓ valid</span> — ${res.email || '?'} · plan: ${res.plan || '?'}${res.premium ? ' · premium' : ''}`; }
+  else { out.innerHTML = `<span class="err">✗ ${res.error || 'invalid'}</span>`; }
+}
+
+function flash(msg, isErr) {
+  const pill = document.getElementById('status-pill');
+  pill.className = 'pill ' + (isErr ? 'pill--bad' : 'pill--good');
+  pill.textContent = msg;
+  setTimeout(refreshStatus, 2500);
+}
+
+document.getElementById('btn-save').onclick = save;
+document.getElementById('btn-reload').onclick = loadSettings;
+document.getElementById('btn-start').onclick = async () => { await api('/api/engine/start',{method:'POST'}); refreshStatus(); };
+document.getElementById('btn-stop').onclick = async () => { await api('/api/engine/stop',{method:'POST'}); refreshStatus(); };
+document.getElementById('btn-restart').onclick = async () => { await api('/api/engine/restart',{method:'POST'}); refreshStatus(); };
+document.getElementById('btn-test-tb').onclick = testTorbox;
+document.getElementById('btn-refresh-log').onclick = refreshLog;
+
+loadSettings();
+refreshStatus();
+setInterval(refreshStatus, 5000);
+</script>
+</body>
+</html>

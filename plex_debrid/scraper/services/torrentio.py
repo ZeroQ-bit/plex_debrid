@@ -8,6 +8,11 @@ name = "torrentio"
 default_opts = "https://torrentio.strem.fun/sort=qualitysize|qualityfilter=480p,scr,cam/manifest.json"
 
 session = custom_session()
+# Torrentio is behind Cloudflare, which blocks the default python-requests
+# User-Agent with a 403. Use a browser-like UA so requests pass through.
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'})
 
 
 def get(url):

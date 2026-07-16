@@ -845,7 +845,15 @@ class library(classes.library):
         try:
             response = get(library.url  + '/library/sections/?X-Plex-Token=' + users[0][1])
             for Directory in response.MediaContainer.Directory:
-                if ([Directory.key] in library.check or library.check == []) and Directory.type in ["movie","show"]:
+                # library.check may store keys as strings (["4","5"]) or as
+                # lists ([["4"],["5"]]). Normalize to flat strings for comparison.
+                check_keys = []
+                for c in library.check:
+                    if isinstance(c, list):
+                        check_keys += [str(x) for x in c]
+                    else:
+                        check_keys.append(str(c))
+                if (str(Directory.key) in check_keys or library.check == []) and Directory.type in ["movie","show"]:
                     types = ['1'] if Directory.type == "movie" else  ['2', '3', '4']
                     sections += [[Directory.key,types]]
                     names += [Directory.title]

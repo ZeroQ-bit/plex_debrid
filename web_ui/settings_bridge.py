@@ -298,13 +298,20 @@ class SettingsStore:
 
 
 def _coerce_for_ui(value, control):
-    """Convert plex_debrid's stored form into a UI-friendly value."""
+    """Convert plex_debrid's stored form into a UI-friendly value.
+
+    IMPORTANT for connect fields: return the raw [[name, token], ...] list
+    UNMODIFIED. Earlier code stripped the token to a {name, connected} dict
+    for display — but that broke round-trips: on Save the token-less form got
+    written back to disk, disconnecting the account. The frontend renders the
+    '✓ name' summary from the first element without needing the token removed.
+    """
     if control == "toggle":
         return str(value).lower() == "true"
     if control == "connect":
-        # Plex/Trakt users stored as [[name, token], ...] — surface a summary.
-        if isinstance(value, list) and len(value) > 0:
-            return [{"name": u[0], "connected": True} for u in value if isinstance(u, (list, tuple))]
+        # Keep the token so Save round-trips it intact.
+        if isinstance(value, list):
+            return value
         return []
     if control in ("multiselect", "list"):
         return value if isinstance(value, list) else (["true"] if (control == "list" and value) else [])

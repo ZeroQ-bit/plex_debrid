@@ -190,14 +190,37 @@ def plex_library_sections(server_url, token):
     return {"sections": sections}
 
 
-def _parse_plex_sections(xml_text):
+def _parse_plex_sections(body_text):
     """Extract Directory entries from a /library/sections response.
 
-    Uses xml.etree (stdlib). Each Directory has key (id), title, type.
+    Plex returns either XML (<MediaContainer><Directory .../>) or JSON
+    ({"MediaContainer":{"Directory":[...]}}) depending on the Accept header.
+    Since _http_request sends Accept: application/json, we usually get JSON —
+    but we handle both to be safe.
     """
     import xml.etree.ElementTree as ET
+    if not body_text:
+        return []
+    # Try JSON first (what we asked for).
     try:
-        root = ET.fromstring(xml_text)
+        data = json.loads(body_text)
+        container = data.get("MediaContainer", data)
+        dirs = container.get("Directory", [])
+        if isinstance(dirs, dict):
+            dirs = [dirs]
+        sections = []
+        for d in dirs:
+            key = d.get("key")
+            if key:
+                sections.append({"key": str(key), "title": d.get("title", "(untitled)"),
+                                 "type": d.get("type", "unknown")})
+        if sections:
+            return sections
+    except (json.JSONDecodeError, ValueError, AttributeError, TypeError):
+        pass
+    # Fall back to XML parsing.
+    try:
+        root = ET.fromstring(body_text)
     except ET.ParseError:
         return []
     sections = []

@@ -234,12 +234,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/plex/sections":
             # The token may not be on disk yet (user connected but hasn't saved),
             # so accept it from the request body too. Body wins over disk.
-            body = self._read_json() or {}
-            raw = store.load_raw()
-            server = body.get("server") or raw.get("Plex server address", "")
-            users = body.get("users") or raw.get("Plex users", [])
-            token = users[0][1] if users else ""
-            return self._send_json(auth.plex_library_sections(server, token))
+            try:
+                body = self._read_json() or {}
+                raw = store.load_raw()
+                server = body.get("server") or raw.get("Plex server address", "")
+                users = body.get("users") or raw.get("Plex users", [])
+                token = users[0][1] if (users and isinstance(users[0], (list, tuple)) and len(users[0]) > 1) else ""
+                return self._send_json(auth.plex_library_sections(server, token))
+            except Exception as e:
+                return self._send_json({"error": "discovery error: " + str(e)})
         if path == "/api/trakt/device/start":
             return self._send_json(auth.trakt_start())
         if path == "/api/test-debrid":

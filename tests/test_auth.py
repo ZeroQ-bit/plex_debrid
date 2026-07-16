@@ -171,6 +171,19 @@ def test_plex_library_sections_parses_xml():
     print("PASS test_plex_library_sections_parses_xml")
 
 
+def test_plex_library_sections_parses_json():
+    """Plex returns JSON (not XML) when Accept: application/json is sent — which
+    is what _http_request does. The parser must handle both."""
+    _setup({"/library/sections": (200, json.dumps({
+        "MediaContainer": {"size": 2, "Directory": [
+            {"key": "4", "title": "Movies", "type": "movie"},
+            {"key": "5", "title": "TV Shows", "type": "show"}]}}))})
+    r = auth.plex_library_sections("http://plex:32400", "tok")
+    assert r["sections"][0] == {"key": "4", "title": "Movies", "type": "movie"}
+    assert r["sections"][1]["key"] == "5"
+    print("PASS test_plex_library_sections_parses_json")
+
+
 def test_plex_library_sections_missing_inputs():
     assert "no plex token" in auth.plex_library_sections("http://x", "")["error"]
     assert "no plex server url" in auth.plex_library_sections("", "tok")["error"]

@@ -15,6 +15,8 @@
 #   POST /v1/api/torrents/createtorrent — add a torrent by magnet
 #   GET  /v1/api/torrents/mylist       — list user torrents (status + files)
 #   GET  /v1/api/torrents/requestdl    — get a direct-downloadable file URL
+#       (unlike the others, this one REQUIRES the key as ?token=, not the
+#        Authorization header — TorBox returns 422 "missing token" otherwise)
 #   GET  /v1/api/user/me               — validate the API key (used by the Web UI)
 #import modules
 from base import *
@@ -179,10 +181,16 @@ def download(element, stream=True, query='', force=False):
                     continue
 
                 # 5) Request a direct-downloadable URL for each wanted file.
+                #    NOTE: requestdl is the one TorBox endpoint that REQUIRES the
+                #    API key as the `token` query param — it ignores the
+                #    Authorization: Bearer header that every other endpoint uses.
+                #    Without token= TorBox returns HTTP 422 "missing token" and no
+                #    download is ever handed off. See torbox-sdk-py / API docs.
                 wanted_ids = _select_file_ids(torrent_files, wanted, force)
                 direct_links = []
                 for file_id in wanted_ids:
-                    dl_url = (API_BASE + "/torrents/requestdl?torrent_id=" + str(torrent_id)
+                    dl_url = (API_BASE + "/torrents/requestdl?token=" + str(api_key)
+                              + "&torrent_id=" + str(torrent_id)
                               + "&file_id=" + str(file_id))
                     dl_resp = get(dl_url)
                     try:

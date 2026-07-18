@@ -252,6 +252,38 @@ def test_download_cached_resolves_links():
     print("PASS test_download_cached_resolves_links")
 
 
+def test_requestdl_requires_token_query_param():
+    """REGRESSION: requestdl is the one TorBox endpoint that ignores the
+    Authorization header and REQUIRES the API key as the `token` query param.
+    Without it TorBox returns HTTP 422 "missing token" and every download fails
+    (the bug that broke all TorBox handoffs in the field)."""
+    _set_api_key("field-key-9876")
+    rel = _Release(hash=VALID_HASH, magnet=MAGNET)
+    el = _make_element([rel])
+    cached_payload = {"success": True, "data": {VALID_HASH.upper(): {
+        "hash": VALID_HASH.upper(), "name": "Test", "size": 1000,
+        "files": [{"id": 1, "name": "Test.Release.S01E01.mkv", "size": 1000}]}}}
+    create_payload = {"success": True, "data": {"torrent_id": 77}}
+    mylist_ready = {"success": True, "data": [{"id": 77, "download_state": "cached"}]}
+    mylist_files = {"success": True, "data": [{"id": 77, "download_state": "cached",
+        "files": [{"id": 1, "name": "Test.Release.S01E01.mkv", "size": 1000}]}]}
+    dl_payload = {"success": True, "data": "https://dl.torbox.app/x.mkv"}
+    mod.session.get.side_effect = [
+        FakeResponse(cached_payload), FakeResponse(mylist_ready),
+        FakeResponse(mylist_files), FakeResponse(dl_payload),
+    ]
+    mod.session.post.return_value = FakeResponse(create_payload)
+    mod.download(el, stream=True, query=".*", force=True)
+    # Find the requestdl GET and inspect its URL.
+    dl_calls = [c for c in mod.session.get.call_args_list if "requestdl" in str(c)]
+    assert dl_calls, "expected a requestdl GET call"
+    dl_url = dl_calls[0][0][0]
+    assert "token=field-key-9876" in dl_url, \
+        f"requestdl must include the api key as token= (got: {dl_url})"
+    assert "torrent_id=77" in dl_url and "file_id=" in dl_url
+    print("PASS test_requestdl_requires_token_query_param")
+
+
 def test_download_uncached_just_submits():
     """download() with stream=False should just POST the magnet and return True."""
     _set_api_key()

@@ -194,6 +194,41 @@ def _is_video_file(name, mimetype=None):
     return False
 
 
+def _parse_season_episode(name):
+    """Parse a (season, episode) pair from a release/file name.
+
+    Recognizes S02E10, s2e5, 2x10, and Season NN patterns. Returns
+    (season_int, episode_int), (season_int, None) for season-packs, or
+    (None, None) if nothing matched.
+    """
+    if not name:
+        return (None, None)
+    nl = name.lower()
+    # S02E10 / s2e5
+    m = re.search(r"[sx](\d{1,2})\s?e(\d{1,3})", nl)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+    # 2x10
+    m = re.search(r"(\d{1,2})x(\d{1,3})", nl)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+    # Season pack: "S02" or "Season 2"
+    m = re.search(r"(?:^|[^0-9])s(\d{1,2})(?:[^0-9]|$)", nl)
+    if m:
+        return (int(m.group(1)), None)
+    m = re.search(r"season\s(\d{1,2})", nl)
+    if m:
+        return (int(m.group(1)), None)
+    return (None, None)
+
+
+def _season_folder_name(season):
+    """Return 'Season 02' (zero-padded) for Plex's TV scanner."""
+    if season is None:
+        return None
+    return "Season {:02d}".format(int(season))
+
+
 def _list_raw_folder(mount_dir, torrent_name):
     """List files in the raw mount folder for a torrent.
 
@@ -296,6 +331,61 @@ def _symlink_video(library_dir, folder_name, filename, target, log_fn):
         return None
 
 
+def _link_tv_episodes(library_dir, folder_name, files, release_title, log_fn):
+    """Link every video file of a TV torrent into Season NN/ subfolders.
+
+    Plex's TV scanner requires Show/Season NN/SxxExx-name.ext structure, so a
+    flat torrent folder (one file per episode) must be fanned out into
+    per-season subfolders with SxxExx-aware names. Returns the number of new
+    symlinks created and the deepest show folder path (for Plex refresh).
+    """
+    show_path = os.path.join(library_dir, folder_name)
+    try:
+        os.makedirs(show_path, exist_ok=True)
+    except OSError as e:
+        _log(log_fn, f"could not create show folder {show_path}: {e}")
+        return (0, None)
+    created = 0
+    for file_name, file_path in files:
+        if not _is_video_file(file_name):
+            continue
+        season, episode = _parse_season_episode(file_name)
+        # Fall back to the release title if the file name has no SxxExx
+        # (single-file releases sometimes encode it only in the folder name).
+        if season is None:
+            season, _ = _parse_season_episode(release_title)
+        season_folder = _season_folder_name(season)
+        if season_folder:
+            sub = os.path.join(show_path, season_folder)
+            try:
+                os.makedirs(sub, exist_ok=True)
+            except OSError:
+                sub = show_path
+        else:
+            sub = show_path
+        # Build a Plex-parseable filename: prefer the original release filename
+        # (it usually already has SxxExx), falling back to folder/quality form.
+        base = file_name
+        # The raw-mount filename may include the torrent folder prefix; strip
+        # everything except the basename if it looks like a path.
+        if "/" in base or "\\" in base:
+            base = os.path.basename(base)
+        link_path = os.path.join(sub, _sanitize_for_fs(base))
+        if os.path.lexists(link_path):
+            continue
+        try:
+            os.symlink(file_path, link_path)
+            created += 1
+        except OSError as e:
+            if getattr(e, "errno", None) == 17:  # EEXIST
+                pass
+            else:
+                _log(log_fn, f"could not create symlink {link_path}: {e}")
+    if created:
+        _log(log_fn, f"linked {created} TV episode(s) under {folder_name}")
+    return (created, show_path)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -350,13 +440,36 @@ def symlink_item(item, mount_dir, library_dirs, log_fn=None):
             _log(log_fn, f"skipped symlink: raw mount folder not found for "
                  f"{torrent_name[:60]!r} (is Debrid Mount running?)")
             return None
+        folder_name = library_folder_name(item, provider, guid)
+
+        if is_tv:
+            # TV: link EVERY episode file into Season NN/ subfolders with
+            # SxxExx-aware names so Plex's TV scanner can parse them. A single
+            # flat .mkv in the show root (the old behaviour) is invisible to
+            # Plex's episode matcher.
+            video_files = [(n, p) for (n, p) in files if _is_video_file(n)]
+            if not video_files:
+                _log(log_fn, f"skipped symlink: no video file in {torrent_name[:60]!r}")
+                return None
+            count, show_path = _link_tv_episodes(
+                library_dir, folder_name, video_files,
+                getattr(release, "title", ""), log_fn)
+            if show_path is None:
+                return None
+            if count:
+                season, _ = _parse_season_episode(getattr(release, "title", ""))
+                sf = _season_folder_name(season)
+                _log(log_fn, f"linked {itype} {getattr(item,'title','')!r} "
+                     f"as {folder_name}"
+                     + (f" / {sf}" if sf else ""))
+            return show_path
+
+        # Movie: single best video file in a flat folder.
         picked = _pick_video_file(files, getattr(release, "title", ""))
         if not picked:
             _log(log_fn, f"skipped symlink: no video file in {torrent_name[:60]!r}")
             return None
         file_name, file_path = picked
-
-        folder_name = library_folder_name(item, provider, guid)
         quality = _quality_tag(getattr(release, "title", ""), file_name)
         link_base = folder_name
         if quality:
@@ -441,6 +554,23 @@ def sweep(api_key, mount_dir, library_dirs, log_fn=None, max_items=None):
             files = _list_raw_folder(raw_root, name)
             if not files:
                 continue
+            # TV library: fan episodes out into Season NN/ subfolders. Movie
+            # library: single best file, flat. (library_dir matches one of the
+            # configured 'tv'/'movie' paths.)
+            is_tv = library_dir == library_dirs.get("tv")
+            if is_tv:
+                video_files = [(n, p) for (n, p) in files if _is_video_file(n)]
+                if not video_files:
+                    continue
+                # Skip if this torrent's files are all already linked somewhere
+                # under the show folder (idempotent across sweeps).
+                if _folder_already_links_any(folder_path,
+                                             [p for _, p in video_files]):
+                    continue
+                count, _ = _link_tv_episodes(library_dir, folder_name,
+                                             video_files, name, log_fn)
+                created += count
+                continue
             picked = _pick_video_file(files, name)
             if not picked:
                 continue
@@ -490,27 +620,49 @@ def _index_library_folders(library_dirs):
     return index
 
 
+def _title_prefix(s):
+    """Extract the leading title words from a release/folder name, stopping at
+    the first season/year/SxxExx/quality marker.
+
+    'Landman.S02.COMPLETE' -> 'landman'
+    'Landman (2024) {tvdb-397424}' -> 'landman'   (after stripping (year){id})
+    'Beast.2026.2160p.WEB' -> 'beast'
+    '2 Broke Girls' -> '2 broke girls'
+    """
+    if not s:
+        return ""
+    # Strip {id} and (year) suffixes first (library-folder form).
+    s = re.sub(r"\s*\{[^}]+\}\s*$", "", s)
+    s = re.sub(r"\s*\(\d{4}\)\s*$", "", s)
+    # Cut at the first season/episode/year/quality/resolution/complete marker.
+    s = re.split(r"[.\s\-_]*(?:s\d{1,2}e\d{1,3}|s\d{1,2}\b|\d{1,2}x\d{1,3}|"
+                 r"\b19\d{2}\b|\b20\d{2}\b|\b2160p\b|\b1080p\b|\b720p\b|"
+                 r"\b480p\b|\b4k\b|\buhd\b|\bcomplete\b|\bseason\s*\d)",
+                 s, maxsplit=1, flags=re.IGNORECASE)[0]
+    return _normalize_title(s)
+
+
 def _match_torrent_to_folder(torrent_name, index):
     """Best-effort match of a raw-mount torrent folder name to an existing
     {tmdb-ID}/{tvdb-ID} library folder. Returns (folder_name, library_dir)
     or None.
 
-    Matching is by normalized title+year prefix, since the library folder is
-    'Title (Year) {id}' and the torrent name usually begins with the title.
+    Matches on the leading title prefix (everything before season/year/quality
+    markers), so 'Landman.S02.COMPLETE' matches 'Landman (2024) {tvdb-397424}'.
     """
-    tn = _normalize_title(torrent_name)
-    if not tn:
+    tn_prefix = _title_prefix(torrent_name)
+    if not tn_prefix:
         return None
     best = None
     best_score = 0
     for low_key, (folder_name, library_dir) in index.items():
-        # Strip the '{id}' suffix for comparison.
-        base = re.sub(r"\s*\{[^}]+\}\s*$", "", folder_name)
-        norm_base = _normalize_title(base)
-        if not norm_base:
+        base_prefix = _title_prefix(folder_name)
+        if not base_prefix:
             continue
-        if tn.startswith(norm_base[:25]) or norm_base.startswith(tn[:25]):
-            score = len(set(norm_base.split()) & set(tn.split()))
+        # Require the title prefixes to overlap (one starts with the other).
+        if base_prefix.startswith(tn_prefix) or tn_prefix.startswith(base_prefix):
+            # Prefer the longest matching prefix (most specific).
+            score = min(len(base_prefix), len(tn_prefix))
             if score > best_score:
                 best_score = score
                 best = (folder_name, library_dir)
@@ -541,6 +693,34 @@ def _folder_already_links(folder_path, target):
                         return True
                 except OSError:
                     pass
+    except OSError:
+        pass
+    return False
+
+
+def _folder_already_links_any(folder_path, targets):
+    """True if folder (recursively) already symlinks any of `targets`.
+
+    Used for TV sweeps where episodes live under Season NN/ subfolders.
+    """
+    target_set = set()
+    for t in targets:
+        try:
+            target_set.add(os.path.realpath(t))
+        except OSError:
+            pass
+    if not target_set:
+        return False
+    try:
+        for root, _dirs, entries in os.walk(folder_path):
+            for entry in entries:
+                full = os.path.join(root, entry)
+                if os.path.islink(full):
+                    try:
+                        if os.path.realpath(full) in target_set:
+                            return True
+                    except OSError:
+                        pass
     except OSError:
         pass
     return False

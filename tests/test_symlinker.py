@@ -309,6 +309,102 @@ def test_symlink_video_handles_eexist_race():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# === TV season/episode parsing ===========================================
+
+def test_parse_season_episode_sxxexx():
+    assert sym._parse_season_episode("Landman.S02E10.Title.2160p") == (2, 10)
+    assert sym._parse_season_episode("show s1e5") == (1, 5)
+
+
+def test_parse_season_episode_x_format():
+    assert sym._parse_season_episode("Friends.2x10") == (2, 10)
+
+
+def test_parse_season_episode_season_pack():
+    assert sym._parse_season_episode("Landman.S02.COMPLETE") == (2, None)
+
+
+def test_parse_season_episode_none():
+    assert sym._parse_season_episode("Random.Movie.2026") == (None, None)
+
+
+def test_season_folder_name_padded():
+    assert sym._season_folder_name(2) == "Season 02"
+    assert sym._season_folder_name(10) == "Season 10"
+    assert sym._season_folder_name(None) is None
+
+
+# === TV symlink structure (Season NN/ folders) ===========================
+
+def test_symlink_item_tv_creates_season_subfolder():
+    """TV episodes must be linked into Season NN/ subfolders so Plex can match
+    them. The flat-in-show-root layout is invisible to Plex's scanner."""
+    tmp = tempfile.mkdtemp()
+    try:
+        movies = os.path.join(tmp, "Movies")
+        tv = os.path.join(tmp, "TV")
+        os.makedirs(movies); os.makedirs(tv)
+        _make_raw_mount(tmp, "Landman.S02.COMPLETE",
+                        [("Landman.S02E01.Pilot.2160p.mkv", 1000),
+                         ("Landman.S02E10.Finale.2160p.mkv", 1200),
+                         ("sample.txt", 1)])
+        ep = _show_episode(title="Landman", year=2024)
+        ep.Releases[0].torrent_name = "Landman.S02.COMPLETE"
+        ep.Releases[0].title = "Landman.S02.COMPLETE.2160p"
+        result = sym.symlink_item(ep, tmp, {"movie": movies, "tv": tv})
+        assert result is not None
+        show = os.path.join(tv, "Landman (2024) {tvdb-100001}")
+        # Season 02 folder must exist with both episodes.
+        season = os.path.join(show, "Season 02")
+        assert os.path.isdir(season), f"Season 02/ missing; got {os.listdir(show)}"
+        episodes = os.listdir(season)
+        assert len(episodes) == 2, f"expected 2 episodes, got {episodes}"
+        # No stray files at the show root (sample.txt excluded).
+        root_files = [f for f in os.listdir(show) if not f.startswith("Season")]
+        assert root_files == [], f"show root must be empty of media: {root_files}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_symlink_item_tv_single_episode_still_gets_season_folder():
+    """A single-episode torrent (S01E05) still goes into Season 01/."""
+    tmp = tempfile.mkdtemp()
+    try:
+        tv = os.path.join(tmp, "TV"); os.makedirs(tv)
+        _make_raw_mount(tmp, "Show.S01E05",
+                        [("Show.S01E05.1080p.mkv", 1000)])
+        ep = _show_episode(title="Show", year=2024)
+        ep.Releases[0].torrent_name = "Show.S01E05"
+        ep.Releases[0].title = "Show.S01E05.1080p"
+        sym.symlink_item(ep, tmp, {"movie": None, "tv": tv})
+        show = os.path.join(tv, "Show (2024) {tvdb-100001}")
+        assert os.path.isdir(os.path.join(show, "Season 01"))
+        assert len(os.listdir(os.path.join(show, "Season 01"))) == 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_sweep_tv_uses_season_subfolders():
+    """The periodic sweep must also fan TV episodes into Season NN/."""
+    tmp = tempfile.mkdtemp()
+    try:
+        tv = os.path.join(tmp, "TV")
+        os.makedirs(os.path.join(tv, "Landman (2024) {tvdb-397424}"))
+        _make_raw_mount(tmp, "Landman.S02.COMPLETE",
+                        [("Landman.S02E01.mkv", 1000),
+                         ("Landman.S02E02.mkv", 1100)])
+        fake_mylist = [{"name": "Landman.S02.COMPLETE", "cached": True,
+                        "download_finished": True}]
+        with patch.object(sym, "_fetch_mylist", return_value=fake_mylist):
+            count = sym.sweep("k", tmp, {"movie": None, "tv": tv})
+        assert count == 2, f"expected 2 episodes linked, got {count}"
+        season = os.path.join(tv, "Landman (2024) {tvdb-397424}", "Season 02")
+        assert os.path.isdir(season)
+        assert len(os.listdir(season)) == 2
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # --- Runner ---------------------------------------------------------------
 def _run_all():
     tests = [v for k, v in sorted(globals().items())

@@ -3,6 +3,7 @@ from base import *
 import releases
 import debrid
 import scraper
+import library_symlinker
 from ui.ui_print import *
 
 imdb_scraped = False
@@ -1527,6 +1528,41 @@ class media:
                     episode.version = self.version
                     episode.downloaded()
 
+    def symlink_downloaded(self):
+        """After a successful download, create a {tmdb-ID}/{tvdb-ID} library
+        symlink for this item and rewrite self.downloaded_releases to point
+        Plex's partial refresh at the symlink folder.
+
+        Reads its config (raw mount path + library dirs) from the environment
+        so it stays independent of the settings module. No-op (returns) if the
+        symlinker isn't configured or the item can't be resolved.
+        """
+        try:
+            mount_dir = os.environ.get("PD_DOWNLOADS_DIR", "")
+            movies_dir = os.environ.get("PD_LIBRARY_MOVIES_DIR", "")
+            tv_dir = os.environ.get("PD_LIBRARY_TV_DIR", "")
+            if not mount_dir or (not movies_dir and not tv_dir):
+                return
+            library_dirs = {"movie": movies_dir, "tv": tv_dir}
+            folder = library_symlinker.symlink_item(
+                self, mount_dir, library_dirs,
+                log_fn=lambda m: ui_print('[symlinker] ' + m, ui_settings.debug))
+            if folder:
+                # Make Plex refresh target the {tmdb-ID} folder we just created
+                # (the folder name, relative to the library root).
+                rel = folder
+                if folder.startswith(movies_dir):
+                    rel = folder[len(movies_dir):].lstrip(os.sep)
+                elif folder.startswith(tv_dir):
+                    rel = folder[len(tv_dir):].lstrip(os.sep)
+                if rel:
+                    if not hasattr(self, "downloaded_releases"):
+                        self.downloaded_releases = []
+                    self.downloaded_releases = [rel]
+        except Exception as e:
+            ui_print('[symlinker] symlink_downloaded failed: ' + str(e),
+                     ui_settings.debug)
+
     def debrid_download(self, force=False):
         debrid.check(self)
         self.bitrate()
@@ -1554,12 +1590,14 @@ class media:
                     if hasattr(release, "cached") and len(release.cached) > 0:
                         if debrid.download(self, stream=True, force=force):
                             self.downloaded()
+                            self.symlink_downloaded()
                             downloaded += [True]
                             ver_dld = True
                             break
                     elif not self.type == 'show' and debrid_uncached:
                         if debrid.download(self, stream=False, force=force):
                             self.downloaded()
+                            self.symlink_downloaded()
                             debrid.downloading += [self.query() +
                                                    ' [' + self.version.name + ']']
                             downloaded += [True]

@@ -28,6 +28,11 @@ if [ ! -f "${CONFIG_DIR}/settings.json" ]; then
     "Library ignore services": [],
     "Sources": [],
     "Versions": [],
+    "Symlinker Enabled": "true",
+    "Symlinker Interval": "15",
+    "Symlinker Mount Path": "/downloads",
+    "Symlinker Movies Library": "/downloads/vortexo/Movies",
+    "Symlinker TV Library": "/downloads/vortexo/TV",
     "Show Menu on Startup": "false",
     "Debug printing": "true",
     "Log to file": "true"

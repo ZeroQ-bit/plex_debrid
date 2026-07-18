@@ -202,6 +202,13 @@ def download(element, stream=True, query='', force=False):
 
                 if len(direct_links) > 0:
                     release.download = direct_links
+                    # Capture the torrent's mount folder name for the library
+                    # symlinker. Falls back to the release title (usually the
+                    # same string) if the mylist lookup fails.
+                    try:
+                        release.torrent_name = _get_torrent_name(torrent_id) or release.title
+                    except Exception:
+                        release.torrent_name = release.title
                     ui_print('[torbox] adding cached release: ' + release.title)
                     return True
                 else:
@@ -212,6 +219,7 @@ def download(element, stream=True, query='', force=False):
                 # Uncached download path — just submit the magnet and return.
                 try:
                     post(API_BASE + "/torrents/createtorrent", data={'magnet': str(release.download[0])})
+                    release.torrent_name = release.title
                     ui_print('[torbox] adding uncached release: ' + release.title)
                     return True
                 except Exception:
@@ -266,6 +274,29 @@ def _get_torrent_files(torrent_id, timeout=30, interval=2):
             pass
         time.sleep(interval)
     return []
+
+
+def _get_torrent_name(torrent_id, timeout=15, interval=2):
+    """Fetch the torrent's `name` from TorBox's mylist.
+
+    The `name` is the folder TorBox creates in its raw mount
+    (.vortexo-source/<name>/), which the library symlinker needs to locate
+    the downloaded media file. Returns the name string or None.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        resp = get(API_BASE + "/torrents/mylist")
+        try:
+            for t in resp.data:
+                if str(getattr(t, 'id', '')) == str(torrent_id):
+                    name = getattr(t, 'name', None)
+                    if name:
+                        return name
+                    break
+        except Exception:
+            pass
+        time.sleep(interval)
+    return None
 
 
 def _select_file_ids(torrent_files, wanted, force):

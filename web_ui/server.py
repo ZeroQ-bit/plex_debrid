@@ -26,6 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from settings_bridge import SettingsStore  # noqa: E402
 import auth  # noqa: E402
+import symlinker as symlinker_sweep  # noqa: E402
 
 PD_ROOT = os.environ.get("PD_ROOT", "/app/plex_debrid")
 CONFIG_DIR = os.environ.get("PD_CONFIG_DIR", "/config")
@@ -313,11 +314,20 @@ def main():
                 print(f"[web_ui] auto-start failed: {e}", file=sys.stderr)
     server = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Handler)
     print(f"[web_ui] listening on :{LISTEN_PORT}", flush=True)
+    # Start the periodic library-symlink sweep as a daemon thread.
+    # It reads its own config (enable/interval) from settings.json and
+    # tolerates the raw mount being absent (Debrid Mount app stopped).
+    sweep_stop = threading.Event()
+    sweep_thread = threading.Thread(
+        target=symlinker_sweep.sweep_loop, args=(store, sweep_stop),
+        daemon=True, name="symlinker-sweep")
+    sweep_thread.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        sweep_stop.set()
         engine.stop()
         server.server_close()
 

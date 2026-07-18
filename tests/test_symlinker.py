@@ -283,6 +283,32 @@ def test_sweep_idempotent():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_symlink_video_handles_eexist_race():
+    """Two torrents resolving to the same symlink name must not error.
+
+    Simulates the EEXIST race: pre-create the symlink, then call _symlink_video
+    again — it must return the path (success) without raising or logging an
+    error."""
+    tmp = tempfile.mkdtemp()
+    try:
+        folder = os.path.join(tmp, "Movies", "Beast (2026) {tmdb-555}")
+        os.makedirs(folder)
+        target = os.path.join(tmp, "raw.mkv")
+        open(target, "wb").truncate(10)
+        link = os.path.join(folder, "Beast (2026) {tmdb-555} [2160p].mkv")
+        os.symlink(target, link)
+        logs = []
+        # Second call must not error and must return the existing path.
+        result = sym._symlink_video(tmp + "/Movies", "Beast (2026) {tmdb-555}",
+                                    "Beast (2026) {tmdb-555} [2160p].mkv",
+                                    target, logs.append)
+        assert result == link
+        # No error logged for the already-existing case.
+        assert not any("could not create" in l for l in logs), logs
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # --- Runner ---------------------------------------------------------------
 def _run_all():
     tests = [v for k, v in sorted(globals().items())

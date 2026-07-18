@@ -264,7 +264,13 @@ def _fetch_mylist(api_key, timeout=30):
 # ---------------------------------------------------------------------------
 
 def _symlink_video(library_dir, folder_name, filename, target, log_fn):
-    """Create library_dir/folder_name/filename -> target. Idempotent."""
+    """Create library_dir/folder_name/filename -> target. Idempotent.
+
+    A symlink already existing (either a real symlink or, in rare legacy cases,
+    a regular file) is treated as success and not an error — multiple torrents
+    can legitimately resolve to the same library filename (e.g. two rips of the
+    same movie), and the first one wins.
+    """
     folder = os.path.join(library_dir, folder_name)
     try:
         os.makedirs(folder, exist_ok=True)
@@ -272,14 +278,20 @@ def _symlink_video(library_dir, folder_name, filename, target, log_fn):
         _log(log_fn, f"could not create library folder {folder}: {e}")
         return None
     link_path = os.path.join(folder, filename)
-    # Idempotent: existing valid symlink is a no-op.
-    if os.path.islink(link_path) or os.path.exists(link_path):
+    # Idempotent: existing symlink/file is a no-op. (islink catches both valid
+    # and broken symlinks; lexists is the most reliable single check.)
+    if os.path.lexists(link_path):
         return link_path
     try:
         os.symlink(target, link_path)
         _log(log_fn, f"symlinked {filename[:60]} -> {target[:80]}")
         return link_path
     except OSError as e:
+        # EEXIST can still race between the lexists check and the symlink call
+        # (two torrents mapping to the same name within one sweep). Treat it as
+        # success — the link is there, which is what we wanted.
+        if getattr(e, "errno", None) == 17:  # EEXIST
+            return link_path
         _log(log_fn, f"could not create symlink {link_path}: {e}")
         return None
 

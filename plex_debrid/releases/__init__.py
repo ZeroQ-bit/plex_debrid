@@ -79,6 +79,18 @@ class rename:
                     string = regex.sub(specialChar[2:-2].lower(),repl.lower(),string)
             else:
                 string = string.replace(specialChar.lower(), repl.lower())
+        # Release titles from scrapers always use '.' as the word separator
+        # (e.g. 'Throw.Momma.from.the.Train'), never spaces. Converting spaces
+        # to dots is therefore a MATCHING INVARIANT that deviation()/query()
+        # depend on, not a user preference. The 'Special character renaming'
+        # setting replaces self.replaceChars wholesale — if a user clears it
+        # (or never configured it and the seeded settings.json has []),
+        # replaceChars becomes [] and multi-word titles would stop matching
+        # cached releases. Force the two invariants here so matching is robust
+        # regardless of the replaceChars config. Apostrophes are also stripped
+        # because release titles drop them ("Lee Cronins" vs "Lee Cronin's").
+        string = string.replace("'", "")
+        string = string.replace(" ", ".")
         string = regex.sub(r'\.+', ".", string)
         return string
 

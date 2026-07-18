@@ -212,6 +212,48 @@ def test_aliases_resets_stale_after_match():
     print("PASS test_aliases_resets_stale_after_match")
 
 
+def test_rename_handles_empty_replacechars():
+    """REGRESSION (the true root cause): the 'Special character renaming'
+    setting replaces releases.rename.replaceChars wholesale. If a user clears
+    it (or the seeded settings.json ships []), replaceChars becomes [] and
+    rename() only lowercases — spaces stay as spaces, apostrophes survive.
+    That breaks matching for every multi-word title ('Hunting Party' ->
+    'hunting party' instead of 'hunting.party').
+
+    rename() must ALWAYS convert spaces->dots and strip apostrophes, since
+    release titles from scrapers always use '.' as the word separator and
+    drop apostrophes. These are matching invariants, not user preferences."""
+    # Simulate the empty-config state that broke the field install.
+    saved = list(releases.rename.replaceChars)
+    try:
+        releases.rename.replaceChars = []
+        assert releases.rename("Hunting Party") == "hunting.party", \
+            f"empty replaceChars must still convert spaces to dots: " \
+            f"{releases.rename('Hunting Party')!r}"
+        assert releases.rename("Lee Cronin's The Mummy") == "lee.cronins.the.mummy", \
+            "empty replaceChars must still strip apostrophes: " \
+            + repr(releases.rename("Lee Cronin's The Mummy"))
+        assert releases.rename("The Sheep Detectives") == "the.sheep.detectives"
+    finally:
+        releases.rename.replaceChars = saved
+    print("PASS test_rename_handles_empty_replacechars")
+
+
+def test_rename_user_rules_still_applied():
+    """User-configured replaceChars rules must still run alongside the
+    invariant normalizations (the fix must not ignore legitimate config)."""
+    saved = list(releases.rename.replaceChars)
+    try:
+        # User adds a custom rule: replace 'and' with '&'. Invariants still apply.
+        releases.rename.replaceChars = [["and", "&"]]
+        out = releases.rename("Hunting and Party")
+        assert "&" in out, f"user rule should apply: {out!r}"
+        assert " " not in out, f"spaces must still become dots: {out!r}"
+    finally:
+        releases.rename.replaceChars = saved
+    print("PASS test_rename_user_rules_still_applied")
+
+
 # --- Runner ---------------------------------------------------------------
 def _run_all():
     tests = [v for k, v in sorted(globals().items())

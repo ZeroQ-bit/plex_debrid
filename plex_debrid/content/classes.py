@@ -463,6 +463,13 @@ class media:
             if not hasattr(self, "alternate_titles"):
                 self.alternate_titles = []
             self.match('content.services.trakt')
+            # match() above does self.__dict__.update(match.__dict__), which can
+            # copy in a stale alternate_titles list (e.g. un-renamed space-form
+            # entries from a previously matched/cached object). Reset it here so
+            # the rename loop below rebuilds the list cleanly. deviation() also
+            # re-normalizes defensively, but clearing at the source stops the
+            # stale entries from being re-cached in plex_metadata.pkl.
+            self.alternate_titles = []
             aliases = sys.modules['content.services.trakt'].aliases(self, lan)
             translations = sys.modules['content.services.trakt'].translations(
                 self, lan)
@@ -555,7 +562,18 @@ class media:
         self.versions()
         if not self.isanime():
             if hasattr(self, 'alternate_titles'):
-                title = '(' + '|'.join(self.alternate_titles) + ')'
+                # Re-normalize every alternate title through releases.rename().
+                # self.alternate_titles can carry stale, un-renamed entries (lowercase
+                # with spaces instead of dots, apostrophes not stripped) because
+                # match() does self.__dict__.update(match.__dict__) and a previously
+                # matched/cached object may have populated alternate_titles without
+                # the aliases() rename loop running. Those space-form entries produce
+                # a deviation regex that never matches dotted release titles
+                # (e.g. 'Throw.Momma.from.the.Train'), so every cached release is
+                # wrongly rejected as "doesn't match the allowed deviation".
+                title = '(' + '|'.join(
+                    releases.rename(t) if isinstance(t, str) else str(t)
+                    for t in self.alternate_titles) + ')'
             else:
                 if self.type == 'movie':
                     title = releases.rename(self.title)
@@ -599,7 +617,11 @@ class media:
                     return '[^A-Za-z0-9]*(' + title + ':?.)(series.)?(\(?' + str(self.grandparentYear) + '\)?.)?(S' + str("{:02d}".format(self.parentIndex)) + 'E' + str("{:02d}".format(self.index)) + '.)'
         else:
             if hasattr(self, 'alternate_titles'):
-                title = '(' + '|'.join(self.alternate_titles) + ')'
+                # See the non-anime branch above: re-normalize to fix stale
+                # space-form entries carried in via match().__dict__.update.
+                title = '(' + '|'.join(
+                    releases.rename(t) if isinstance(t, str) else str(t)
+                    for t in self.alternate_titles) + ')'
             else:
                 if self.type == 'movie':
                     title = releases.rename(self.title)

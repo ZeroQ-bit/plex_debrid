@@ -5,6 +5,7 @@ import scraper
 import releases
 import debrid
 from ui import ui_settings
+from settings_file import merge_settings_file
 from ui.ui_print import *
 from settings import *
 
@@ -271,8 +272,10 @@ def save(doprint=True):
         for setting in settings:
             save_settings[setting.name] = setting.get()
     try:
-        with open(config_dir + '/settings.json', 'w') as f:
-            json.dump(save_settings, f, indent=4)
+        # Preserve settings owned by the Web UI (for example the library
+        # symlinker). Older code rebuilt the file from engine settings only,
+        # silently deleting those values on every engine restart.
+        merge_settings_file(config_dir + '/settings.json', save_settings)
         if doprint:
             print('Current settings saved!')
             time.sleep(2)
@@ -286,6 +289,16 @@ def save(doprint=True):
 def load(doprint=False, updated=False):
     with open(config_dir + '/settings.json', 'r') as f:
         settings = json.loads(f.read())
+    # Canonicalize labels written by older Web UI builds before the engine
+    # activates services and writes settings back to disk.
+    if isinstance(settings.get('Content Services'), list):
+        content_service_aliases = {
+            'Plex Watchlist': 'Plex',
+            'Trakt Watchlist': 'Trakt',
+        }
+        settings['Content Services'] = list(dict.fromkeys(
+            content_service_aliases.get(str(service), str(service))
+            for service in settings['Content Services']))
     if 'version' not in settings:
         update(settings, ui_settings.version)
         updated = True
@@ -312,7 +325,7 @@ def load(doprint=False, updated=False):
             settings["Trakt ignore user"] = settings["Trakt users"][0]
     for category, load_settings in settings_list:
         for setting in load_settings:
-            if setting.name in settings and not setting.name == 'version' and not setting.name == 'Content Services':
+            if setting.name in settings and not setting.name == 'version':
                 setting.set(settings[setting.name])
     if doprint:
         print('Last settings loaded!')

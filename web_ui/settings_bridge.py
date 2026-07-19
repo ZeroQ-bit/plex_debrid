@@ -17,7 +17,13 @@ import threading
 
 # Fixed option sets (what plex_debrid actually supports).
 DEBRID_PROVIDERS = ["TorBox", "Real Debrid", "All Debrid", "Premiumize", "Debrid Link", "Put.io"]
-CONTENT_SERVICES = ["Plex Watchlist", "Trakt Watchlist", "Overseerr"]
+# These values must match content.services.<service>.name. The engine persists
+# the canonical names below; UI-only "... Watchlist" labels do not round-trip.
+CONTENT_SERVICES = ["Plex", "Trakt", "Overseerr"]
+CONTENT_SERVICE_ALIASES = {
+    "Plex Watchlist": "Plex",
+    "Trakt Watchlist": "Trakt",
+}
 LIBRARY_COLLECTION = ["Plex Library", "Trakt Collection", "Local", "Jellyfin"]
 LIBRARY_UPDATE = ["Plex Libraries", "Trakt Collections", "Jellyfin Libraries", "Local"]
 LIBRARY_IGNORE = ["Plex Discover Watch Status", "Trakt Watch Status", "Local ignore list"]
@@ -74,52 +80,52 @@ SCHEMA = [
     ]),
     ("Plex", [
         ("Plex users", "Plex Account Token", "connect_legacy", {"flow": "plex",
-            "show_if": {"Content Services": "Plex Watchlist"},
+            "show_if": {"Content Services": "Plex"},
             "token_url": "https://www.plex.tv/devices/",
             "help": "Get your Plex token: open the link, sign in, find a 'token' in the device list, paste it below, and click Test. The watchlist is read via Plex's GraphQL API (the same one the Plex web app uses)."}),
         ("Plex server address", "Plex Server URL", "text", {"placeholder": "http://192.168.1.43:32400",
-            "show_if": {"Content Services": "Plex Watchlist"},
+            "show_if": {"Content Services": "Plex"},
             "help": "Used to trigger library scans after a download."}),
         ("Plex auto remove", "Auto-remove from Watchlist", "select", {"options": AUTO_REMOVE_OPTS,
-            "show_if": {"Content Services": "Plex Watchlist"},
+            "show_if": {"Content Services": "Plex"},
             "help": "Remove from your Plex Watchlist after a successful download."}),
         ("Plex library refresh", "Plex Refresh Sections", "multiselect",
-            {"dynamic_options": "plex_sections", "show_if": {"Content Services": "Plex Watchlist"},
+            {"dynamic_options": "plex_sections", "show_if": {"Content Services": "Plex"},
              "help": "Which Plex libraries to scan after a download. Auto-discovered from your server — click a section to toggle."}),
         ("Plex library partial scan", "Plex Partial Scan", "toggle",
-            {"show_if": {"Content Services": "Plex Watchlist"},
+            {"show_if": {"Content Services": "Plex"},
              "help": "Scan only the affected library folder (faster)."}),
         ("Plex library refresh delay", "Plex Refresh Delay (seconds)", "text",
-            {"show_if": {"Content Services": "Plex Watchlist"}, "placeholder": "0",
+            {"show_if": {"Content Services": "Plex"}, "placeholder": "0",
              "help": "Wait this long between adding a torrent and scanning your Plex libraries."}),
         ("Plex library check", "Plex Library Check (sections)", "multiselect",
-            {"dynamic_options": "plex_sections", "show_if": {"Content Services": "Plex Watchlist"},
+            {"dynamic_options": "plex_sections", "show_if": {"Content Services": "Plex"},
              "help": "Sections checked for existing content before downloading (avoid duplicates). Auto-discovered."}),
         ("Plex ignore user", "Plex Ignore User", "text",
-            {"show_if": {"Content Services": "Plex Watchlist"},
+            {"show_if": {"Content Services": "Plex"},
              "help": "A Plex username whose watchlist items should be ignored."}),
     ]),
     ("Trakt", [
         ("Trakt users", "Trakt Account", "connect", {"flow": "trakt",
-            "show_if": {"Content Services": "Trakt Watchlist"},
+            "show_if": {"Content Services": "Trakt"},
             "help": "Click Connect, enter the code at trakt.tv/device."}),
         ("Trakt lists", "Trakt Lists", "list",
-            {"show_if": {"Content Services": "Trakt Watchlist"},
+            {"show_if": {"Content Services": "Trakt"},
              "help": "Extra Trakt list URLs/IDs to monitor (beyond the watchlist)."}),
         ("Trakt auto remove", "Auto-remove from Watchlist", "select", {"options": AUTO_REMOVE_OPTS,
-            "show_if": {"Content Services": "Trakt Watchlist"},
+            "show_if": {"Content Services": "Trakt"},
             "help": "Remove from your Trakt Watchlist after a successful download."}),
         ("Trakt early movie releases", "Early movie releases", "toggle",
-            {"show_if": {"Content Services": "Trakt Watchlist"},
+            {"show_if": {"Content Services": "Trakt"},
              "help": "Check Trakt 'latest releases' lists for early movie grabs."}),
         ("Trakt library user", "Trakt Library User", "text",
-            {"show_if": {"Content Services": "Trakt Watchlist"},
+            {"show_if": {"Content Services": "Trakt"},
              "help": "Trakt user whose collection is used as the library."}),
         ("Trakt refresh user", "Trakt Refresh User", "text",
-            {"show_if": {"Content Services": "Trakt Watchlist"},
+            {"show_if": {"Content Services": "Trakt"},
              "help": "Trakt user whose collection gets refreshed after a download."}),
         ("Trakt ignore user", "Trakt Ignore User", "text",
-            {"show_if": {"Content Services": "Trakt Watchlist"},
+            {"show_if": {"Content Services": "Trakt"},
              "help": "A Trakt username whose watchlist items should be ignored."}),
     ]),
     ("Overseerr", [
@@ -189,18 +195,22 @@ SCHEMA = [
     ]),
     ("Library Symlinker", [
         ("Symlinker Enabled", "Enable Symlinker", "toggle",
-            {"help": "After a download, create a {tmdb-ID}/{tvdb-ID} symlink in the Plex library pointing at the Debrid Mount, and periodically reconcile the library. Requires the Debrid Mount app to be running."}),
+            {"default": "true",
+             "help": "After a download, create a {tmdb-ID}/{tvdb-ID} symlink in the Plex library pointing at the Debrid Mount, and periodically reconcile the library. Requires the Debrid Mount app to be running."}),
         ("Symlinker Interval", "Sweep Interval (minutes)", "text",
-            {"placeholder": "15",
+            {"default": "15", "placeholder": "15",
              "help": "How often the background sweep reconciles the library against TorBox. Default 15 minutes."}),
         ("Symlinker Mount Path", "Raw Mount Path", "text",
-            {"placeholder": "/downloads",
+            {"default": os.environ.get("PD_DOWNLOADS_DIR", "/downloads"),
+             "placeholder": "/downloads",
              "help": "Container path holding the .vortexo-source raw mount. Default /downloads (matches Debrid Mount)."}),
         ("Symlinker Movies Library", "Movies Library Path", "text",
-            {"placeholder": "/downloads/vortexo/Movies",
+            {"default": os.environ.get("PD_LIBRARY_MOVIES_DIR", "/downloads/vortexo/Movies"),
+             "placeholder": "/downloads/vortexo/Movies",
              "help": "Where movie {tmdb-ID} symlinks are created (must match your Plex Movies library folder)."}),
         ("Symlinker TV Library", "TV Library Path", "text",
-            {"placeholder": "/downloads/vortexo/TV",
+            {"default": os.environ.get("PD_LIBRARY_TV_DIR", "/downloads/vortexo/TV"),
+             "placeholder": "/downloads/vortexo/TV",
              "help": "Where TV {tvdb-ID} symlinks are created (must match your Plex TV Shows library folder)."}),
     ]),
     ("General", [
@@ -264,6 +274,8 @@ class SettingsStore:
                 raw_val = raw.get(fkey)
                 if (raw_val is None or raw_val == "" or raw_val == []) and default is not None:
                     raw_val = default
+                if fkey == "Content Services" and isinstance(raw_val, list):
+                    raw_val = _canonical_content_services(raw_val)
                 items.append({
                     "key": fkey, "label": label, "control": control,
                     "options": meta.get("options"),
@@ -312,6 +324,8 @@ class SettingsStore:
         for key, value in edits.items():
             if isinstance(value, bool):
                 raw[key] = "true" if value else "false"
+            elif key == "Content Services" and isinstance(value, list):
+                raw[key] = _canonical_content_services(value)
             elif key == "Sources" and isinstance(value, list):
                 # Scraper module names are lowercase (torrentio, jackett, ...).
                 # Normalize so the case-sensitive comparison in scraper.get() matches.
@@ -320,6 +334,16 @@ class SettingsStore:
                 raw[key] = value
         self.save_raw(raw)
         return raw
+
+
+def _canonical_content_services(values):
+    """Map historical UI labels to the names the engine actually persists."""
+    canonical = []
+    for value in values:
+        name = CONTENT_SERVICE_ALIASES.get(str(value), str(value))
+        if name in CONTENT_SERVICES and name not in canonical:
+            canonical.append(name)
+    return canonical
 
 
 def _coerce_for_ui(value, control):

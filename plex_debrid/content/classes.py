@@ -1489,6 +1489,13 @@ class media:
                     refresh_ = True
                 return refresh_, retry
             return debrid_downloaded, retry
+        if self.type == 'show':
+            # Season/episode downloads happen on child objects. Propagate their
+            # canonical {tvdb-ID}/{tmdb-ID} paths so the parent Show's partial
+            # Plex scan targets the actual show folder instead of the TV root.
+            canonical_paths = library_symlinker.canonical_downloaded_release_paths(self)
+            if canonical_paths:
+                self.downloaded_releases = canonical_paths
         self.collect(refresh_)
 
     def downloaded(self):
@@ -1544,9 +1551,20 @@ class media:
             if not mount_dir or (not movies_dir and not tv_dir):
                 return
             library_dirs = {"movie": movies_dir, "tv": tv_dir}
+            try:
+                mount_attempts = max(1, int(os.environ.get(
+                    "PD_SYMLINK_MOUNT_ATTEMPTS", "16")))
+            except (TypeError, ValueError):
+                mount_attempts = 16
+            try:
+                retry_delay = max(0.0, float(os.environ.get(
+                    "PD_SYMLINK_MOUNT_RETRY_SECONDS", "2")))
+            except (TypeError, ValueError):
+                retry_delay = 2.0
             folder = library_symlinker.symlink_item(
                 self, mount_dir, library_dirs,
-                log_fn=lambda m: ui_print('[symlinker] ' + m, ui_settings.debug))
+                log_fn=lambda m: ui_print('[symlinker] ' + m, ui_settings.debug),
+                mount_attempts=mount_attempts, retry_delay=retry_delay)
             if folder:
                 # Make Plex refresh target the {tmdb-ID} folder we just created
                 # (the folder name, relative to the library root).
@@ -1559,6 +1577,14 @@ class media:
                     if not hasattr(self, "downloaded_releases"):
                         self.downloaded_releases = []
                     self.downloaded_releases = [rel]
+                    self.symlink_library_paths = [rel]
+            else:
+                # Do not let Plex partially scan a raw torrent-title path that
+                # does not exist in the configured library. The reserved
+                # canonical folder lets the background sweep recover later.
+                if hasattr(self, "downloaded_releases"):
+                    self.downloaded_releases = []
+                self.symlink_library_paths = []
         except Exception as e:
             ui_print('[symlinker] symlink_downloaded failed: ' + str(e),
                      ui_settings.debug)

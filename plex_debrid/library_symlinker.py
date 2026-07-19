@@ -26,6 +26,7 @@ of the public entry points — failures are logged and skipped.
 """
 import os
 import re
+import time
 
 import requests
 
@@ -38,6 +39,9 @@ _VIDEO_MIMETYPES = ("video/",)
 _VIDEO_EXTS = (".mkv", ".mp4", ".avi", ".ts", ".m2ts")
 # Sample-ish tags we avoid when picking the "main" file.
 _SKIP_NAMES = ("sample", ".exe", ".txt", ".nfo", ".jpg", ".png", ".sfv")
+# Durable hand-off from the engine process to the web UI sweep. Plex ignores
+# dotfiles; the marker remains until a scan is observed completing.
+SCAN_PENDING_MARKER = ".plex-scan-pending"
 
 
 def _log(log_fn, msg):
@@ -46,6 +50,45 @@ def _log(log_fn, msg):
             log_fn(msg)
         except Exception:
             pass
+
+
+def _mark_scan_pending(folder_path, log_fn=None):
+    try:
+        with open(os.path.join(folder_path, SCAN_PENDING_MARKER), "a",
+                  encoding="utf-8"):
+            pass
+        return True
+    except OSError as e:
+        _log(log_fn, f"could not mark Plex scan pending for {folder_path}: {e}")
+        return False
+
+
+def clear_scan_pending(folder_path, log_fn=None):
+    marker = os.path.join(folder_path, SCAN_PENDING_MARKER)
+    try:
+        if os.path.isfile(marker) and not os.path.islink(marker):
+            os.unlink(marker)
+        return True
+    except OSError as e:
+        _log(log_fn, f"could not clear Plex scan marker for {folder_path}: {e}")
+        return False
+
+
+def _pending_scan_paths(library_dirs):
+    pending = []
+    for kind, library_dir in library_dirs.items():
+        if kind not in ("movie", "tv") or not library_dir:
+            continue
+        try:
+            entries = os.listdir(library_dir)
+        except OSError:
+            continue
+        for entry in entries:
+            folder = os.path.join(library_dir, entry)
+            marker = os.path.join(folder, SCAN_PENDING_MARKER)
+            if os.path.isdir(folder) and os.path.isfile(marker):
+                pending.append((kind, folder))
+    return pending
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +112,9 @@ def _first_eid(eids, scheme):
             # Strip query/fragment suffixes from legacy agents.
             rest = rest.split("?", 1)[0].split("#", 1)[0]
             rest = rest.strip()
-            if rest:
+            # TMDB and TVDB identifiers are numeric. Reject path-like or
+            # otherwise malformed external IDs before they reach folder names.
+            if re.fullmatch(r"\d+", rest):
                 return rest
     return None
 
@@ -209,9 +254,20 @@ def _parse_season_episode(name):
     if m:
         return (int(m.group(1)), int(m.group(2)))
     # 2x10
-    m = re.search(r"(\d{1,2})x(\d{1,3})", nl)
+    m = re.search(r"(?<!\d)(\d{1,2})x(\d{1,3})(?!\d)", nl)
     if m:
         return (int(m.group(1)), int(m.group(2)))
+    # Season 2/Episode 10 (common in nested season-pack paths).
+    m = re.search(r"season\s*(\d{1,2}).*?(?:episode|ep)\s*(\d{1,3})", nl)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+    # A flat season pack may use episode01.mkv while the torrent title carries
+    # only S02. Return the episode independently so the caller can combine it
+    # with the release-level season.
+    m = re.search(r"(?:^|[^a-z0-9])(?:episode|ep)[ ._-]*(\d{1,3})(?:[^0-9]|$)",
+                  nl)
+    if m:
+        return (None, int(m.group(1)))
     # Season pack: "S02" or "Season 2"
     m = re.search(r"(?:^|[^0-9])s(\d{1,2})(?:[^0-9]|$)", nl)
     if m:
@@ -236,18 +292,68 @@ def _list_raw_folder(mount_dir, torrent_name):
     Returns a list of (filename, full_path) tuples, or [] if the folder is
     missing/unreadable.
     """
-    folder = os.path.join(mount_dir, torrent_name)
-    if not os.path.isdir(folder):
+    root_path = os.path.realpath(mount_dir)
+    source = os.path.realpath(os.path.join(root_path, torrent_name))
+    try:
+        if os.path.commonpath([root_path, source]) != root_path:
+            return []
+    except (OSError, ValueError):
+        return []
+    # Single-file torrents can be exposed directly at the mount root, with
+    # TorBox's `name` itself ending in .mkv/.mp4 rather than naming a folder.
+    if os.path.isfile(source):
+        return [(os.path.basename(source), source)]
+    if not os.path.isdir(source):
         return []
     out = []
     try:
-        for entry in sorted(os.listdir(folder)):
-            full = os.path.join(folder, entry)
-            if os.path.isfile(full):
-                out.append((entry, full))
+        # Season packs often contain Show/Season NN/<episode> rather than
+        # placing every file directly in the torrent root. Preserve the
+        # relative name so season information in parent directories remains
+        # available to the TV parser.
+        for root, dirs, entries in os.walk(source):
+            dirs.sort()
+            for entry in sorted(entries):
+                full = os.path.join(root, entry)
+                resolved = os.path.realpath(full)
+                try:
+                    contained = os.path.commonpath(
+                        [root_path, resolved]) == root_path
+                except (OSError, ValueError):
+                    contained = False
+                if contained and os.path.isfile(full):
+                    out.append((os.path.relpath(full, source), full))
     except OSError:
         return []
     return out
+
+
+def _list_raw_folder_with_retry(mount_dir, torrent_name, attempts=1,
+                                retry_delay=2.0, log_fn=None):
+    """Wait briefly for a newly-added torrent to appear in the rclone mount.
+
+    TorBox can report a cached torrent ready before the separate rclone mount's
+    directory cache exposes it. `attempts` includes the initial lookup, so the
+    default keeps direct unit callers non-blocking while the post-download
+    integration can opt into a bounded wait.
+    """
+    try:
+        attempts = max(1, int(attempts))
+    except (TypeError, ValueError):
+        attempts = 1
+    try:
+        retry_delay = max(0.0, float(retry_delay))
+    except (TypeError, ValueError):
+        retry_delay = 2.0
+    for index in range(attempts):
+        files = _list_raw_folder(mount_dir, torrent_name)
+        if files:
+            if index:
+                _log(log_fn, f"raw mount became ready after {index + 1} checks")
+            return files
+        if index + 1 < attempts:
+            time.sleep(retry_delay)
+    return []
 
 
 def _pick_video_file(files, release_title=""):
@@ -350,10 +456,13 @@ def _link_tv_episodes(library_dir, folder_name, files, release_title, log_fn):
         if not _is_video_file(file_name):
             continue
         season, episode = _parse_season_episode(file_name)
-        # Fall back to the release title if the file name has no SxxExx
-        # (single-file releases sometimes encode it only in the folder name).
+        release_season, release_episode = _parse_season_episode(release_title)
+        # Fall back independently: a nested path may provide the season while
+        # only the torrent title provides the episode (or vice versa).
         if season is None:
-            season, _ = _parse_season_episode(release_title)
+            season = release_season
+        if episode is None:
+            episode = release_episode
         season_folder = _season_folder_name(season)
         if season_folder:
             sub = os.path.join(show_path, season_folder)
@@ -370,6 +479,14 @@ def _link_tv_episodes(library_dir, folder_name, files, release_title, log_fn):
         # everything except the basename if it looks like a path.
         if "/" in base or "\\" in base:
             base = os.path.basename(base)
+        # A generic raw filename such as `video.mkv` is not parseable by the
+        # Plex TV scanner even if its torrent title contains S02E01. Inject the
+        # recovered marker while retaining the extension.
+        _, base_episode = _parse_season_episode(base)
+        if base_episode is None and season is not None and episode is not None:
+            ext = os.path.splitext(base)[1] or ".mkv"
+            base = (folder_name + " - S{:02d}E{:02d}".format(
+                    int(season), int(episode)) + ext)
         link_path = os.path.join(sub, _sanitize_for_fs(base))
         if os.path.lexists(link_path):
             continue
@@ -390,7 +507,8 @@ def _link_tv_episodes(library_dir, folder_name, files, release_title, log_fn):
 # Public API
 # ---------------------------------------------------------------------------
 
-def symlink_item(item, mount_dir, library_dirs, log_fn=None):
+def symlink_item(item, mount_dir, library_dirs, log_fn=None,
+                 mount_attempts=1, retry_delay=2.0):
     """Create a library symlink for a freshly-downloaded media item.
 
     Args:
@@ -433,14 +551,25 @@ def symlink_item(item, mount_dir, library_dirs, log_fn=None):
             _log(log_fn, "skipped symlink: release has no torrent name")
             return None
 
-        raw_root = os.path.join(mount_dir, ".vortexo-source")
-        files = _list_raw_folder(raw_root, torrent_name)
-        if not files:
-            # Mount may not be ready yet, or the folder name differs.
-            _log(log_fn, f"skipped symlink: raw mount folder not found for "
-                 f"{torrent_name[:60]!r} (is Debrid Mount running?)")
-            return None
         folder_name = library_folder_name(item, provider, guid)
+        folder_path = os.path.join(library_dir, folder_name)
+        # Reserve the canonical ID folder before consulting the eventually
+        # consistent mount. If the bounded wait still misses, the periodic
+        # sweep can now match the torrent and recover it later.
+        try:
+            os.makedirs(folder_path, exist_ok=True)
+        except OSError as e:
+            _log(log_fn, f"could not reserve library folder {folder_path}: {e}")
+            return None
+
+        raw_root = os.path.join(mount_dir, ".vortexo-source")
+        files = _list_raw_folder_with_retry(
+            raw_root, torrent_name, attempts=mount_attempts,
+            retry_delay=retry_delay, log_fn=log_fn)
+        if not files:
+            _log(log_fn, f"pending symlink: raw mount source not found for "
+                 f"{torrent_name[:60]!r}; reserved {folder_name!r} for sweep recovery")
+            return None
 
         if is_tv:
             # TV: link EVERY episode file into Season NN/ subfolders with
@@ -462,6 +591,7 @@ def symlink_item(item, mount_dir, library_dirs, log_fn=None):
                 _log(log_fn, f"linked {itype} {getattr(item,'title','')!r} "
                      f"as {folder_name}"
                      + (f" / {sf}" if sf else ""))
+            _mark_scan_pending(show_path, log_fn)
             return show_path
 
         # Movie: single best video file in a flat folder.
@@ -484,6 +614,7 @@ def symlink_item(item, mount_dir, library_dirs, log_fn=None):
             return None
         _log(log_fn, f"linked {itype} {getattr(item,'title','')!r} "
              f"as {folder_name}")
+        _mark_scan_pending(folder_path, log_fn)
         return os.path.join(library_dir, folder_name)
     except Exception as e:
         _log(log_fn, f"symlink_item failed: {e!r}")
@@ -505,7 +636,45 @@ def symlink_release_titles(item):
     return [library_folder_name(item, provider, guid)]
 
 
-def sweep(api_key, mount_dir, library_dirs, log_fn=None, max_items=None):
+def canonical_downloaded_release_paths(item):
+    """Collect canonical ID-folder refresh paths from an item and children.
+
+    Show downloads are delegated to Season/Episode objects. Their successful
+    symlink paths must be propagated back to the parent Show before it asks
+    Plex to scan; otherwise Plex falls back to the entire TV root. Only
+    canonical `{tmdb-ID}`/`{tvdb-ID}` paths are returned, never raw torrent
+    titles left by the debrid dispatcher.
+    """
+    found = []
+    seen_paths = set()
+    seen_objects = set()
+
+    def visit(node):
+        if node is None or id(node) in seen_objects:
+            return
+        seen_objects.add(id(node))
+        # This explicit field is written only after the symlinker succeeds;
+        # do not infer trust from raw torrent titles in downloaded_releases.
+        for path in getattr(node, "symlink_library_paths", None) or []:
+            if not isinstance(path, str):
+                continue
+            basename = os.path.basename(path.rstrip(os.sep))
+            if not re.fullmatch(r".+\{(?:tmdb|tvdb)-[^{}]+\}", basename,
+                                flags=re.IGNORECASE):
+                continue
+            if path not in seen_paths:
+                seen_paths.add(path)
+                found.append(path)
+        for attr in ("Seasons", "Episodes"):
+            for child in getattr(node, attr, None) or []:
+                visit(child)
+
+    visit(item)
+    return found
+
+
+def sweep(api_key, mount_dir, library_dirs, log_fn=None, max_items=None,
+          changed_paths=None):
     """Periodic reconciliation: symlink any TorBox torrents missing from the
     library.
 
@@ -546,7 +715,8 @@ def sweep(api_key, mount_dir, library_dirs, log_fn=None, max_items=None):
             # Only cached/completed torrents expose files in the mount.
             if not (t.get("cached") or t.get("download_finished")):
                 continue
-            match = _match_torrent_to_folder(name, existing)
+            kind_hint = _infer_media_kind(name)
+            match = _match_torrent_to_folder(name, existing, kind_hint)
             if not match:
                 continue
             folder_name, library_dir = match
@@ -554,6 +724,14 @@ def sweep(api_key, mount_dir, library_dirs, log_fn=None, max_items=None):
             files = _list_raw_folder(raw_root, name)
             if not files:
                 continue
+            file_kind = _infer_media_kind(*[file_name for file_name, _ in files])
+            if file_kind and file_kind != kind_hint:
+                typed_match = _match_torrent_to_folder(
+                    name, existing, file_kind)
+                if not typed_match:
+                    continue
+                folder_name, library_dir = typed_match
+                folder_path = os.path.join(library_dir, folder_name)
             # TV library: fan episodes out into Season NN/ subfolders. Movie
             # library: single best file, flat. (library_dir matches one of the
             # configured 'tv'/'movie' paths.)
@@ -562,14 +740,14 @@ def sweep(api_key, mount_dir, library_dirs, log_fn=None, max_items=None):
                 video_files = [(n, p) for (n, p) in files if _is_video_file(n)]
                 if not video_files:
                     continue
-                # Skip if this torrent's files are all already linked somewhere
-                # under the show folder (idempotent across sweeps).
-                if _folder_already_links_any(folder_path,
-                                             [p for _, p in video_files]):
-                    continue
+                # Reconcile every episode individually. _link_tv_episodes is
+                # already idempotent; an "any target exists" precheck used to
+                # skip the rest of a partially-linked season pack.
                 count, _ = _link_tv_episodes(library_dir, folder_name,
                                              video_files, name, log_fn)
                 created += count
+                if count:
+                    _mark_scan_pending(folder_path, log_fn)
                 continue
             picked = _pick_video_file(files, name)
             if not picked:
@@ -589,6 +767,9 @@ def sweep(api_key, mount_dir, library_dirs, log_fn=None, max_items=None):
                                           link_filename, file_path, log_fn)
             if created_link:
                 created += 1
+                _mark_scan_pending(folder_path, log_fn)
+        if changed_paths is not None:
+            changed_paths.extend(_pending_scan_paths(library_dirs))
         _log(log_fn, f"sweep complete: {created} new symlinks")
     except Exception as e:
         _log(log_fn, f"sweep failed: {e!r}")
@@ -600,8 +781,7 @@ def sweep(api_key, mount_dir, library_dirs, log_fn=None, max_items=None):
 # ---------------------------------------------------------------------------
 
 def _index_library_folders(library_dirs):
-    """Return {folder_name_lower: (folder_name, library_dir)} for existing
-    library folders that carry a {provider-id} tag."""
+    """Index ID folders as (folder_name, library_dir, media_kind)."""
     index = {}
     for key, library_dir in library_dirs.items():
         if not library_dir or not os.path.isdir(library_dir):
@@ -616,8 +796,17 @@ def _index_library_folders(library_dirs):
                 continue
             if not re.search(r"\{(tmdb|tvdb)-", entry):
                 continue
-            index[entry.lower()] = (entry, library_dir)
+            index[entry.lower()] = (entry, library_dir, key)
     return index
+
+
+def _infer_media_kind(*names):
+    """Return 'tv' when a torrent/file name carries episode/season markers."""
+    for name in names:
+        season, episode = _parse_season_episode(name)
+        if season is not None or episode is not None:
+            return "tv"
+    return None
 
 
 def _title_prefix(s):
@@ -642,7 +831,7 @@ def _title_prefix(s):
     return _normalize_title(s)
 
 
-def _match_torrent_to_folder(torrent_name, index):
+def _match_torrent_to_folder(torrent_name, index, media_kind=None):
     """Best-effort match of a raw-mount torrent folder name to an existing
     {tmdb-ID}/{tvdb-ID} library folder. Returns (folder_name, library_dir)
     or None.
@@ -655,7 +844,11 @@ def _match_torrent_to_folder(torrent_name, index):
         return None
     best = None
     best_score = 0
-    for low_key, (folder_name, library_dir) in index.items():
+    for low_key, value in index.items():
+        folder_name, library_dir = value[:2]
+        folder_kind = value[2] if len(value) > 2 else None
+        if media_kind and folder_kind and folder_kind != media_kind:
+            continue
         base_prefix = _title_prefix(folder_name)
         if not base_prefix:
             continue

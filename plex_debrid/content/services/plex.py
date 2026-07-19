@@ -10,6 +10,11 @@ users = []
 headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
 current_library = []
 
+def _auth_headers(token):
+    authenticated = dict(headers)
+    authenticated['X-Plex-Token'] = token
+    return authenticated
+
 def setup(cls, new=False):
     from content.services import setup
     setup(cls,new)
@@ -28,9 +33,10 @@ def logerror(response):
         else:
             ui_print("plex error: (401 unauthorized): token for user '"+name+"' does not seem to work. check your plex user settings.")
 
-def get(url, timeout=60):
+def get(url, timeout=60, token=None):
     try:
-        response = session.get(url, headers=headers, timeout=timeout)
+        request_headers = _auth_headers(token) if token else headers
+        response = session.get(url, headers=request_headers, timeout=timeout)
         logerror(response)
         response = json.loads(response.content, object_hook=lambda d: SimpleNamespace(**d))
         return response
@@ -535,22 +541,38 @@ class library(classes.library):
                     if library.refresh.partial == "true":
                         for folder in folders:
                             refreshing = True
+                            wait_deadline = time.monotonic() + 120
                             while refreshing:
                                 refreshing = False
-                                url = library.url + '/library/sections/?X-Plex-Token=' + users[0][1]
-                                response = get(url)
-                                for section_ in response.MediaContainer.Directory:
-                                    if section_.refreshing:
+                                url = library.url + '/library/sections/'
+                                response = get(url, token=users[0][1])
+                                if response is None:
+                                    break
+                                directories = response.MediaContainer.Directory
+                                if not isinstance(directories, (list, tuple)):
+                                    directories = [directories]
+                                for section_ in directories:
+                                    if (section_.key == section
+                                            and section_.refreshing):
                                         refreshing = True
                                 if refreshing:
+                                    if time.monotonic() >= wait_deadline:
+                                        ui_print("Plex scan wait timed out for section " + section, debug=ui_settings.debug)
+                                        break
                                     time.sleep(0.25)
-                            url = library.url + '/library/sections/' + section + '/refresh?path='+folder+'&X-Plex-Token=' + users[0][1]
-                            ui_print("refreshing plex via url: " + url, debug=ui_settings.debug)
-                            response = session.get(url)
+                            url = library.url + '/library/sections/' + section + '/refresh?path='+folder
+                            ui_print("refreshing plex section " + section + " at path: " + folder, debug=ui_settings.debug)
+                            response = session.get(
+                                url, headers=_auth_headers(users[0][1]),
+                                timeout=60)
+                            logerror(response)
                     else:
-                        url = library.url + '/library/sections/' + section + '/refresh?X-Plex-Token=' + users[0][1]
-                        ui_print("refreshing plex via url: " + url, debug=ui_settings.debug)
-                        response = session.get(url)
+                        url = library.url + '/library/sections/' + section + '/refresh'
+                        ui_print("refreshing plex section " + section, debug=ui_settings.debug)
+                        response = session.get(
+                            url, headers=_auth_headers(users[0][1]),
+                            timeout=60)
+                        logerror(response)
             except Exception as e:
                 ui_print(str(e), debug=ui_settings.debug)
 
@@ -558,10 +580,13 @@ class library(classes.library):
             try:
                 names = []
                 element_type = ("show" if element.type in ["show","season","episode"] else "movie")
-                url = library.url + '/library/sections/?X-Plex-Token=' + users[0][1]
-                response = get(url)
+                url = library.url + '/library/sections/'
+                response = get(url, token=users[0][1])
                 paths = []
-                for section_ in response.MediaContainer.Directory:
+                directories = response.MediaContainer.Directory
+                if not isinstance(directories, (list, tuple)):
+                    directories = [directories]
+                for section_ in directories:
                     if section_.key in library.refresh.sections and element_type == section_.type:
                         names += [section_.title]
                         folders = []

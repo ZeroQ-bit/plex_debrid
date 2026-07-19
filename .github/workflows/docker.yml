@@ -25,8 +25,12 @@ jobs:
       - name: Install test dependencies
         run: pip install -r plex_debrid/requirements.txt
 
-      - name: Run TorBox provider tests
-        run: python3 tests/test_torbox.py
+      - name: Run tests
+        run: |
+          python3 tests/test_torbox.py
+          python3 tests/test_deviation.py
+          python3 tests/test_symlinker.py
+          python3 tests/test_auth.py
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
